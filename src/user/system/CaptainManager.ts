@@ -24,8 +24,8 @@ import DiskCleanupManager from './DiskCleanupManager'
 import DomainResolveChecker from './DomainResolveChecker'
 import LoadBalancerManager from './LoadBalancerManager'
 import SelfHostedDockerRegistry from './SelfHostedDockerRegistry'
-import request = require('request')
 import fs = require('fs-extra')
+import { requestText } from '../../utils/httpRequest'
 
 const DEBUG_SALT = 'THIS IS NOT A REAL CERTIFICATE'
 
@@ -339,7 +339,7 @@ class CaptainManager {
 
             const url = `http://${captainPublicDomain}${CaptainConstants.healthCheckEndPoint}`
 
-            request(
+            requestText(
                 url,
 
                 function (error, response, body) {

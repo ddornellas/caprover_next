@@ -8,6 +8,8 @@
         "sourceMap": true,
         "allowJs": true,
         "esModuleInterop": true,
+        "skipLibCheck": true,
+        "isolatedModules": true,
         "noUnusedLocals": true,
         "target": "ES2018"
     },

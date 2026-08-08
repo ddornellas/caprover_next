@@ -1,14 +1,17 @@
-# Build stage runs on the host platform to avoid QEMU SIGILL issues with Node.js 24 on arm64
+# Build the application on the host platform. Production dependencies are
+# installed again in the target-platform runtime stage below.
 FROM --platform=$BUILDPLATFORM node:24-alpine AS builder
 RUN apk add --update --no-cache make gcc g++ git curl openssl
 
 WORKDIR /usr/src/app
+COPY package.json package-lock.json ./
+COPY frontend/package.json ./frontend/package.json
+RUN npm ci
 COPY . ./
 
 # Build backend code
-RUN npm ci && \
-     npm run build && \
-     npm ci --omit=dev && \
+RUN npm run build && \
+     rm -rf ./frontend/.next/cache && \
      npm cache clean --force && \
      mv ./edge-override.json ./config-override.json
 
@@ -17,7 +20,20 @@ FROM node:24-alpine
 RUN apk add --update --no-cache git curl openssl openssh
 
 WORKDIR /usr/src/app
-COPY --from=builder /usr/src/app .
+COPY --from=builder /usr/src/app/built ./built
+COPY --from=builder /usr/src/app/package.json ./package.json
+COPY --from=builder /usr/src/app/package-lock.json ./package-lock.json
+COPY --from=builder /usr/src/app/frontend/package.json ./frontend/package.json
+COPY --from=builder /usr/src/app/frontend/.next ./frontend/.next
+COPY --from=builder /usr/src/app/frontend/public ./frontend/public
+COPY --from=builder /usr/src/app/frontend/next.config.ts ./frontend/next.config.ts
+COPY --from=builder /usr/src/app/frontend/package.json ./frontend/package.json
+COPY --from=builder /usr/src/app/public ./public
+COPY --from=builder /usr/src/app/template ./template
+COPY --from=builder /usr/src/app/config-override.json ./config-override.json
+
+# Install optional/native packages for the image's target architecture.
+RUN npm ci --omit=dev && npm cache clean --force
 
 # This quick hack invalidates the cache.
 ADD https://www.google.com /time.now

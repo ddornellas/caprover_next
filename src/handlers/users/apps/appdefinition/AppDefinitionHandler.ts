@@ -220,8 +220,18 @@ export async function patchAppDefinition(
     // Extract only defined patch fields, mapping to UpdateAppDefinitionParams keys
     const overrides: Partial<UpdateAppDefinitionParams> = {}
     for (const key of Object.keys(patch)) {
-        if (key === 'appPushWebhook') {
+        // appName identifies the resource being patched; it is immutable and
+        // must never replace the selector used by the route.
+        if (key === 'appName') {
+            continue
+        } else if (key === 'appPushWebhook') {
             overrides.repoInfo = (patch.appPushWebhook as any)?.repoInfo
+        } else if (key === 'httpAuth') {
+            const requestedAuth = patch.httpAuth as
+                Record<string, unknown> | null | undefined
+            overrides.httpAuth = requestedAuth
+                ? { ...(base.httpAuth || {}), ...requestedAuth }
+                : undefined
         } else if (key in base) {
             ;(overrides as any)[key] = patch[key]
         }

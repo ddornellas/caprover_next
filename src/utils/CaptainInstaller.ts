@@ -4,7 +4,7 @@ import BackupManager from '../user/system/BackupManager'
 import CaptainConstants from './CaptainConstants'
 import EnvVar from './EnvVars'
 import http = require('http')
-import request = require('request')
+import { requestText } from './httpRequest'
 
 // internal IP returns Public IP if the machine is not behind a NAT
 // No need to directly use Public IP.
@@ -246,7 +246,7 @@ function checkPortOrThrow(ipAddr: string, portToTest: number) {
             reject(new Error(`Port timed out: ${portToTest}`))
         }, 5000)
 
-        request(
+        requestText(
             `http://${ipAddr}:${portToTest}`,
             function (error, response, body) {
                 if (finished) {

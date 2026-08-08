@@ -1,8 +1,8 @@
-import request = require('request')
 import axios from 'axios'
 import DockerApi from '../../docker/DockerApi'
 import CaptainConstants from '../../utils/CaptainConstants'
 import Logger from '../../utils/Logger'
+import { requestText } from '../../utils/httpRequest'
 import DockerRegistryHelper from '../DockerRegistryHelper'
 
 class VersionManager {
@@ -78,7 +78,7 @@ class VersionManager {
         const url = `https://hub.docker.com/v2/repositories/${CaptainConstants.configs.publishedNameOnDockerHub}/tags`
 
         return new Promise<string[]>(function (resolve, reject) {
-            request(
+            requestText(
                 url,
 
                 function (error, response, body) {

@@ -5,8 +5,8 @@ import Logger from '../../utils/Logger'
 import Utils from '../../utils/Utils'
 import CertbotManager from './CertbotManager'
 import LoadBalancerManager from './LoadBalancerManager'
-import request = require('request')
 import fs = require('fs-extra')
+import { requestText } from '../../utils/httpRequest'
 
 export default class DomainResolveChecker {
     constructor(
@@ -64,7 +64,7 @@ export default class DomainResolveChecker {
                 return new Promise<void>(function (resolve, reject) {
                     const url = `http://${domainName}:${CaptainConstants.configs.nginxPortNumber80}${captainConfirmationPath}`
 
-                    request(
+                    requestText(
                         url,
 
                         function (error, response, body) {
@@ -103,7 +103,7 @@ export default class DomainResolveChecker {
 
             Logger.d(`Sending request to ${url}`)
 
-            request(url, function (error, response, body) {
+            requestText(url, function (error, response, body) {
                 if (
                     error ||
                     !body ||

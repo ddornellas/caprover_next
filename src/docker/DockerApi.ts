@@ -1845,35 +1845,45 @@ connectionParams.version = CaptainConstants.configs.dockerApiVersion
 const dockerApiInstance = new DockerApi(connectionParams)
 
 const lowVersionDocker = JSON.parse(JSON.stringify(connectionParams))
-lowVersionDocker.version = 'v1.44'
+lowVersionDocker.version = CaptainConstants.configs.dockerApiVersion
 
-new Docker(lowVersionDocker)
-    .version()
-    .then((data) => {
-        Logger.d('Docker API Version on host: ' + data.ApiVersion)
+let dockerVersionCheckPromise: Promise<void> | undefined
 
-        const majorSupported = Number(data.ApiVersion.split('.')[0])
-        const minorSupported = Number(data.ApiVersion.split('.')[1])
-        const majorNeeded = Number(
-            CaptainConstants.configs.dockerApiVersion
-                .replace('v', '')
-                .split('.')[0]
-        )
-        const minorNeeded = Number(
-            CaptainConstants.configs.dockerApiVersion
-                .replace('v', '')
-                .split('.')[1]
-        )
+export function checkDockerVersion(): Promise<void> {
+    if (dockerVersionCheckPromise) {
+        return dockerVersionCheckPromise
+    }
 
-        if (
-            majorSupported < majorNeeded ||
-            (majorSupported === majorNeeded && minorSupported < minorNeeded)
-        ) {
-            dockerApiInstance.dockerNeedsUpdate = true
-        }
-    })
-    .catch((error) => {
-        Logger.e('Docker API Version Error: ' + error)
-    })
+    dockerVersionCheckPromise = new Docker(lowVersionDocker)
+        .version()
+        .then((data) => {
+            Logger.d('Docker API Version on host: ' + data.ApiVersion)
+
+            const majorSupported = Number(data.ApiVersion.split('.')[0])
+            const minorSupported = Number(data.ApiVersion.split('.')[1])
+            const majorNeeded = Number(
+                CaptainConstants.configs.dockerApiVersion
+                    .replace('v', '')
+                    .split('.')[0]
+            )
+            const minorNeeded = Number(
+                CaptainConstants.configs.dockerApiVersion
+                    .replace('v', '')
+                    .split('.')[1]
+            )
+
+            if (
+                majorSupported < majorNeeded ||
+                (majorSupported === majorNeeded && minorSupported < minorNeeded)
+            ) {
+                dockerApiInstance.dockerNeedsUpdate = true
+            }
+        })
+        .catch((error) => {
+            Logger.e('Docker API Version Error: ' + error)
+        })
+
+    return dockerVersionCheckPromise
+}
 
 export default DockerApi

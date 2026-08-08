@@ -6,6 +6,11 @@
 /built
 /dist-frontend
 /temp-frontend
+/frontend/node_modules
+/frontend/.next
+/frontend/out
+/frontend/tsconfig.tsbuildinfo
+/frontend/legacy/node_modules
 
 version
 

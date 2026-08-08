@@ -9,17 +9,17 @@ jobs:
     run-pre-checks:
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v3
+            - uses: actions/checkout@v4
             - uses: actions/setup-node@v5
               with:
                   node-version: 24
-            - run: |
-                  sudo bash -c "mkdir /captain && chown -R `whoami` /captain"
-                  npm ci
-                  npm run build
-                  npm run lint
-                  npm run formatter
-                  npm run test
+            - name: Prepare runtime directory
+              run: sudo install -d -o "$USER" /captain
+            - run: npm ci
+            - run: npm run build
+            - run: npm run lint
+            - run: npm run formatter
+            - run: npm run test:all
     build-publish-docker-hub:
         needs: run-pre-checks
         runs-on: ubuntu-latest
@@ -28,7 +28,7 @@ jobs:
               with:
                   username: ${{ secrets.REGISTRY_USERNAME }}
                   password: ${{ secrets.REGISTRY_PASSWORD }}
-            - uses: actions/checkout@v1
+            - uses: actions/checkout@v4
             - name: Build and Push Edge to DockerHub
               shell: bash
               run: ./dev-scripts/build_and_push_edge.sh

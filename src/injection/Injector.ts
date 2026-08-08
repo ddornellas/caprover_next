@@ -13,6 +13,7 @@ import { UserManagerProvider } from '../user/UserManagerProvider'
 import CaptainConstants from '../utils/CaptainConstants'
 import Logger from '../utils/Logger'
 import InjectionExtractor from './InjectionExtractor'
+import { decodeAuthTokenFromRequest } from './AuthTokenExtractor'
 import { IAppDef } from '../models/AppDefinition'
 
 const dockerApi = DockerApiProvider.get()
@@ -56,9 +57,28 @@ export function injectUser() {
         }
 
         const namespace = res.locals.namespace
+        const authHeader = req.header(CaptainConstants.headerAuth)
+        const cookieToken = req.cookies?.[CaptainConstants.headerCookieAuth]
 
-        Authenticator.getAuthenticator(namespace)
-            .decodeAuthToken(req.header(CaptainConstants.headerAuth) || '')
+        if (
+            !authHeader &&
+            cookieToken &&
+            isMutatingRequest(req) &&
+            !isSameOriginRequest(req)
+        ) {
+            res.status(403).send(
+                new BaseApi(
+                    ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED,
+                    'Cross-origin mutation rejected.'
+                )
+            )
+            return
+        }
+
+        decodeAuthTokenFromRequest(
+            req,
+            Authenticator.getAuthenticator(namespace)
+        )
             .then(function (userDecoded) {
                 if (userDecoded) {
                     const datastore = DataStoreProvider.getDataStore(namespace)
@@ -102,6 +122,27 @@ export function injectUser() {
                 next()
             })
     }
+}
+
+function isMutatingRequest(req: Request) {
+    return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)
+}
+
+export function isSameOriginRequest(req: Pick<Request, 'get' | 'secure'>) {
+    const origin = req.get('Origin')
+
+    // Non-browser clients such as the CapRover CLI do not send Origin.
+    if (!origin) return true
+
+    const forwardedProto = req.get('X-Forwarded-Proto')
+    const protocol =
+        forwardedProto?.split(',')[0].trim() || (req.secure ? 'https' : 'http')
+    const forwardedHost = req.get('X-Forwarded-Host')
+    const host = forwardedHost?.split(',')[0].trim() || req.get('Host')
+
+    if (!host) return false
+
+    return origin === `${protocol}://${host}`
 }
 
 /**

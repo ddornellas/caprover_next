@@ -33,21 +33,6 @@ if [[ "$BRANCH" != "master" ]]; then
     exit 1
 fi
 
-## Building frontend app
-ORIG_DIR=$(pwd)
-FRONTEND_DIR=/home/runner/app-frontend
-curl -Iv https://registry.yarnpkg.com/
-mkdir -p $FRONTEND_DIR && cd $FRONTEND_DIR
-git clone https://github.com/githubsaturn/caprover-frontend.git
-cd caprover-frontend
-git log --max-count=1
-yarn install --no-cache --frozen-lockfile --network-timeout 600000
-echo "Installation finished"
-yarn run build
-echo "Building finished"
-cd $ORIG_DIR
-mv $FRONTEND_DIR/caprover-frontend/build ./dist-frontend
-
 sudo apt-get update && sudo apt-get install qemu-user-static
 # docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 docker run --rm --privileged tonistiigi/binfmt --install all

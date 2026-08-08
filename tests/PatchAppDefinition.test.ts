@@ -211,6 +211,43 @@ describe('patchAppDefinition', () => {
         expect(args[11]).toEqual(mockExistingApp.httpAuth)
     })
 
+    it('should merge HTTP auth edits without dropping the stored password', async () => {
+        await patchAppDefinition(
+            'my-app',
+            { appName: 'my-app', httpAuth: { user: 'new-admin' } },
+            mockDataStore,
+            mockServiceManager
+        )
+
+        expect(capturedUpdateArgs[11]).toEqual({
+            user: 'new-admin',
+            password: 'pass123',
+        })
+    })
+
+    it('should allow HTTP auth to be disabled explicitly', async () => {
+        await patchAppDefinition(
+            'my-app',
+            { appName: 'my-app', httpAuth: undefined },
+            mockDataStore,
+            mockServiceManager
+        )
+
+        expect(capturedUpdateArgs[11]).toBeUndefined()
+    })
+
+    it('should not let the payload replace the selected app name', async () => {
+        await patchAppDefinition(
+            'my-app',
+            { appName: 'another-app', instanceCount: 4 },
+            mockDataStore,
+            mockServiceManager
+        )
+
+        expect(capturedUpdateArgs[0]).toBe('my-app')
+        expect(capturedUpdateArgs[3]).toBe(4)
+    })
+
     it('should handle multiple fields updated at once', async () => {
         await patchAppDefinition(
             'my-app',

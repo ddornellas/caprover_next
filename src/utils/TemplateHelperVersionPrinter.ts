@@ -1,8 +1,8 @@
-import request = require('request')
 import ApiStatusCodes from '../api/ApiStatusCodes'
 import { IHashMapGeneric } from '../models/ICacheGeneric'
 import { ITemplate } from '../models/OtherTypes'
 import Logger from './Logger'
+import { requestText } from './httpRequest'
 
 function getTagsForImage(
     imageBaseName: string,
@@ -14,7 +14,7 @@ function getTagsForImage(
     }
 
     return new Promise<string[]>(function (resolve, reject) {
-        request(
+        requestText(
             url!,
 
             function (error, response, body) {
@@ -24,17 +24,18 @@ function getTagsForImage(
                     return
                 }
 
+                let parsedBody: any
                 try {
                     // Sometimes Docker server is down and it crashes Captain!
-                    body = JSON.parse(body)
+                    parsedBody = JSON.parse(body)
                 } catch (e) {
                     Logger.e(e)
                 }
 
                 let results: any
 
-                if (body) {
-                    results = body.results
+                if (parsedBody) {
+                    results = parsedBody.results
                 }
 
                 if (!results) {
@@ -51,8 +52,10 @@ function getTagsForImage(
                     allTags.push(results[idx].name)
                 }
 
-                if (body.next) {
-                    resolve(getTagsForImage(imageBaseName, body.next, allTags))
+                if (parsedBody.next) {
+                    resolve(
+                        getTagsForImage(imageBaseName, parsedBody.next, allTags)
+                    )
                     return
                 }
 

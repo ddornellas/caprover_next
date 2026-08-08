@@ -96,7 +96,12 @@ router.post('/', function (req, res, next) {
             )
         })
         .then(function (cookieAuth) {
-            res.cookie(CaptainConstants.headerCookieAuth, cookieAuth)
+            res.cookie(CaptainConstants.headerCookieAuth, cookieAuth, {
+                httpOnly: true,
+                sameSite: 'lax',
+                secure: req.secure || req.get('X-Forwarded-Proto') === 'https',
+                path: '/',
+            })
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'Login succeeded'
@@ -123,6 +128,16 @@ router.post('/', function (req, res, next) {
             })
         })
         .catch(ApiStatusCodes.createCatcher(res))
+})
+
+router.post('/logout/', function (req, res) {
+    res.clearCookie(CaptainConstants.headerCookieAuth, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: req.secure || req.get('X-Forwarded-Proto') === 'https',
+        path: '/',
+    })
+    res.send(new BaseApi(ApiStatusCodes.STATUS_OK, 'Logout succeeded'))
 })
 
 export default router

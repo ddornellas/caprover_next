@@ -35,7 +35,10 @@ const configs = {
 
     registrySubDomainPort: 996,
 
-    dockerApiVersion: 'v1.44',
+    // Docker 24 (still common in local and managed installations) supports
+    // v1.43 as its maximum API version. Newer daemons remain backward
+    // compatible, so this keeps the control plane portable across both.
+    dockerApiVersion: 'v1.43',
 
     netDataImageName: 'caprover/netdata:v1.34.1',
 

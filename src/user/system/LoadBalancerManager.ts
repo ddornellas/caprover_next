@@ -14,7 +14,7 @@ import CaptainConstants from '../../utils/CaptainConstants'
 import Logger from '../../utils/Logger'
 import CertbotManager from './CertbotManager'
 import fs = require('fs-extra')
-import request = require('request')
+import { requestText } from '../../utils/httpRequest'
 const exec = util.promisify(chileProcess.exec)
 
 const defaultPageTemplate = fs
@@ -439,7 +439,7 @@ class LoadBalancerManager {
         return new Promise<LoadBalancerInfo>(function (resolve, reject) {
             const url = `http://${CaptainConstants.nginxServiceName}/nginx_status`
 
-            request(url, function (error, response, body) {
+            requestText(url, function (error, response, body) {
                 if (error || !body) {
                     Logger.e(`Error        ${error}`)
                     reject(

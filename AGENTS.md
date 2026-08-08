@@ -15,9 +15,11 @@ Keep changes narrowly scoped. Do not add API fields, configuration, or abstracti
 - `src/injection/`: request-scoped dependencies and authentication.
 - `src/models/`: shared data contracts.
 - `src/utils/CaptainConstants.ts`: runtime configuration, identifiers, and filesystem paths.
+- `frontend/`: Next.js App Router, Server Components, and shadcn/ui interface.
+- `frontend/legacy/`: preserved CRA frontend during the incremental migration.
 - `tests/`: Jest regression tests.
 
-The frontend is maintained in `caprover/caprover-frontend`. User-facing documentation is maintained in `caprover/caprover-website`.
+The frontend now lives in this repository. User-facing documentation is maintained in `caprover/caprover-website`.
 
 ## Change constraints
 
