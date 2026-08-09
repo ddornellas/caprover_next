@@ -58,6 +58,8 @@ Actions release flow, and the safe way to update a VM.
 
 For contribution and local development details, see
 [CONTRIBUTING.md](CONTRIBUTING.md) and the [frontend development notes](frontend/README.md).
+The planned frontend, agent-access, and log-observability work is tracked in
+the [roadmap](ROADMAP.md).
 
 ## Contributors
 
