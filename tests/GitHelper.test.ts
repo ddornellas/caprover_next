@@ -16,6 +16,14 @@ test('Testing  - sanitizeRepoPathHttps from SSH', () => {
     ).toBe('github.com/username/repository.git')
 })
 
+test('Testing - sanitizeRepoPathHttps strips embedded credentials', () => {
+    expect(
+        GitHelper.sanitizeRepoPathHttps(
+            'https://user:password@example.com/owner/repository.git'
+        )
+    ).toBe('example.com/owner/repository.git')
+})
+
 test('Testing  - sanitizeRepoPathSsh', () => {
     expect(
         GitHelper.sanitizeRepoPathSsh(
@@ -27,15 +35,15 @@ test('Testing  - sanitizeRepoPathSsh', () => {
 test('Testing  - sanitizeRepoPathSsh - with extra path components', () => {
     const sanitized = GitHelper.sanitizeRepoPathSsh(
         ' git@gitlab.com/test1/test2/test3.git'
-    );
+    )
     expect(sanitized).toEqual({
-        domain: "gitlab.com",
-        owner: "test1",
+        domain: 'gitlab.com',
+        owner: 'test1',
         port: 22,
-        repo: "test2/test3",
-        repoPath: "ssh://git@gitlab.com:22/test1/test2/test3.git",
-        suffix: ".git",
-        user: "git",
+        repo: 'test2/test3',
+        repoPath: 'ssh://git@gitlab.com:22/test1/test2/test3.git',
+        suffix: '.git',
+        user: 'git',
     })
 })
 
@@ -52,13 +60,13 @@ test('Testing  - sanitizeRepoPathSsh - custom port', () => {
         ' git@github.com:1234/username/repository.git/  '
     )
     expect(sanitized).toEqual({
-        user: "git",
-        domain: "github.com",
-        owner: "username",
+        user: 'git',
+        domain: 'github.com',
+        owner: 'username',
         port: 1234,
-        repo: "repository",
-        suffix: ".git",
-        repoPath: "ssh://git@github.com:1234/username/repository.git",
+        repo: 'repository',
+        suffix: '.git',
+        repoPath: 'ssh://git@github.com:1234/username/repository.git',
     })
 })
 
@@ -149,9 +157,10 @@ test('Testing  - sanitizeRepoPathSsh - with extra path components separated by c
         domain: 'ssh.dev.azure.com',
         port: 22,
         owner: 'v3',
-        repo: "myOrg/My%20Project%20Name/my-repo-name",
-        repoPath: "ssh://git@ssh.dev.azure.com:22/v3/myOrg/My%20Project%20Name/my-repo-name",
-        suffix: "",
+        repo: 'myOrg/My%20Project%20Name/my-repo-name',
+        repoPath:
+            'ssh://git@ssh.dev.azure.com:22/v3/myOrg/My%20Project%20Name/my-repo-name',
+        suffix: '',
     })
 })
 
@@ -160,13 +169,14 @@ test('Testing  - sanitizeRepoPathSsh - with extra path components and port separ
         '  git@ssh.dev.azure.com:422:v3/myOrg/My%20Project%20Name/my-repo-name '
     )
     expect(sanitized).toEqual({
-        user: "git",
+        user: 'git',
         domain: 'ssh.dev.azure.com',
-        owner: "v3",
+        owner: 'v3',
         port: 422,
-        repo: "myOrg/My%20Project%20Name/my-repo-name",
-        repoPath: "ssh://git@ssh.dev.azure.com:422/v3/myOrg/My%20Project%20Name/my-repo-name",
-        suffix: "",
+        repo: 'myOrg/My%20Project%20Name/my-repo-name',
+        repoPath:
+            'ssh://git@ssh.dev.azure.com:422/v3/myOrg/My%20Project%20Name/my-repo-name',
+        suffix: '',
     })
 })
 
@@ -178,10 +188,11 @@ test('Testing  - sanitizeRepoPathSsh - with extra path components and "owner" in
         user: 'myOrg',
         domain: 'vs-ssh.visualstudio.com',
         port: 22,
-        owner: "v3",
-        repo: "myOrg/My%20Project%20Name/my-repo-name",
-        repoPath: "ssh://myOrg@vs-ssh.visualstudio.com:22/v3/myOrg/My%20Project%20Name/my-repo-name",
-        suffix: "",
+        owner: 'v3',
+        repo: 'myOrg/My%20Project%20Name/my-repo-name',
+        repoPath:
+            'ssh://myOrg@vs-ssh.visualstudio.com:22/v3/myOrg/My%20Project%20Name/my-repo-name',
+        suffix: '',
     })
 })
 

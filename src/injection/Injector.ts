@@ -15,6 +15,7 @@ import Logger from '../utils/Logger'
 import InjectionExtractor from './InjectionExtractor'
 import { decodeAuthTokenFromRequest } from './AuthTokenExtractor'
 import { IAppDef } from '../models/AppDefinition'
+import { getTrustedHost, getTrustedProtocol } from '../utils/RateLimiter'
 
 const dockerApi = DockerApiProvider.get()
 
@@ -128,17 +129,22 @@ function isMutatingRequest(req: Request) {
     return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)
 }
 
-export function isSameOriginRequest(req: Pick<Request, 'get' | 'secure'>) {
+export function isSameOriginRequest(
+    req: Pick<Request, 'get' | 'secure' | 'socket'>
+) {
     const origin = req.get('Origin')
+
+    const fetchSite = req.get('Sec-Fetch-Site')?.toLowerCase()
+    if (fetchSite === 'cross-site') return false
 
     // Non-browser clients such as the CapRover CLI do not send Origin.
     if (!origin) return true
 
-    const forwardedProto = req.get('X-Forwarded-Proto')
-    const protocol =
-        forwardedProto?.split(',')[0].trim() || (req.secure ? 'https' : 'http')
-    const forwardedHost = req.get('X-Forwarded-Host')
-    const host = forwardedHost?.split(',')[0].trim() || req.get('Host')
+    // A browser's opaque origin is never the control plane's own origin.
+    if (origin === 'null') return false
+
+    const protocol = getTrustedProtocol(req)
+    const host = getTrustedHost(req)
 
     if (!host) return false
 

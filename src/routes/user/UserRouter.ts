@@ -4,6 +4,7 @@ import BaseApi from '../../api/BaseApi'
 import InjectionExtractor from '../../injection/InjectionExtractor'
 import * as Injector from '../../injection/Injector'
 import Authenticator from '../../user/Authenticator'
+import { auditFromRequest } from '../../user/AuditLogger'
 import EnvVars from '../../utils/EnvVars'
 import Utils from '../../utils/Utils'
 import AppsRouter from './apps/AppsRouter'
@@ -15,6 +16,7 @@ import RegistriesRouter from './registeries/RegistriesRouter'
 import SystemRouter from './system/SystemRouter'
 import onFinished = require('on-finished')
 import { IHashMapGeneric } from '../../models/ICacheGeneric'
+import { getRequestClientKey, getTrustedHeader } from '../../utils/RateLimiter'
 
 const router = express.Router()
 
@@ -64,8 +66,11 @@ router.use(function (req, res, next) {
     // I'm being extra cautious. But removal of this lock mechanism requires testing and consideration of edge cases.
     if (Utils.isNotGetRequest(req)) {
         if (EnvVars.DEMO_MODE_ADMIN_IP) {
-            const realIp = `${req.headers['x-real-ip']}`
-            const forwardedIp = `${req.headers['x-forwarded-for']}`
+            const realIp = getRequestClientKey(req)
+            const forwardedIp =
+                getTrustedHeader(req, 'X-Forwarded-For')
+                    ?.split(',')[0]
+                    ?.trim() || ''
             if (
                 !realIp ||
                 !Utils.isValidIp(realIp) ||
@@ -120,9 +125,25 @@ router.post('/changepassword/', function (req, res, next) {
             return dataStore.setHashedPassword(hashedPassword)
         })
         .then(function () {
+            void auditFromRequest(
+                dataStore,
+                req,
+                'auth.password.change',
+                'success',
+                'root-session'
+            )
             res.send(new BaseApi(ApiStatusCodes.STATUS_OK, 'Password changed.'))
         })
-        .catch(ApiStatusCodes.createCatcher(res))
+        .catch(function (error) {
+            void auditFromRequest(
+                dataStore,
+                req,
+                'auth.password.change',
+                'failure',
+                'root-session'
+            )
+            ApiStatusCodes.createCatcher(res)(error)
+        })
 })
 
 router.use('/apps/', AppsRouter)

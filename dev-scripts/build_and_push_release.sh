@@ -53,4 +53,4 @@ docker buildx rm mybuilder || echo "mybuilder not found"
 docker buildx create --name mybuilder
 docker buildx use mybuilder
 
-docker buildx build --platform linux/amd64,linux/arm64 -t $IMAGE_NAME:$CAPROVER_VERSION -t $IMAGE_NAME:latest -f dockerfile-captain.release --push .
+docker buildx build --pull --provenance=true --sbom=true --platform linux/amd64,linux/arm64 -t $IMAGE_NAME:$CAPROVER_VERSION -t $IMAGE_NAME:latest --build-arg CACHE_BUST="${GITHUB_SHA:-release}" -f dockerfile-captain.release --push .

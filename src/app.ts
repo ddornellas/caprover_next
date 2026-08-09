@@ -20,29 +20,57 @@ import AgentRouter from './routes/agent/AgentRouter'
 import CaptainManager from './user/system/CaptainManager'
 import CaptainConstants from './utils/CaptainConstants'
 import Logger from './utils/Logger'
+import { getTrustedHost, getTrustedProtocol } from './utils/RateLimiter'
 import Utils from './utils/Utils'
 
 // import { NextFunction, Request, Response } from 'express'
 
 const httpProxy = httpProxyImport.createProxyServer({})
 
+const debugCorsOrigins = new Set(
+    (
+        process.env.CAPROVER_DEBUG_ORIGINS ||
+        'http://localhost:3000,http://127.0.0.1:3000,http://captain.localhost:3000'
+    )
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+)
+
 const app = express()
+app.disable('x-powered-by')
+
+function getCanonicalControlHost(req: express.Request) {
+    const incomingHost = getTrustedHost(req)
+    const canonicalHost = `${CaptainConstants.configs.captainSubDomain}.${CaptainManager.get().getRootDomain()}`
+    return incomingHost === canonicalHost ? incomingHost : canonicalHost
+}
 
 app.set('views', path.join(__dirname, '../views'))
 app.set('view engine', 'ejs')
 
 app.use(favicon(path.join(__dirname, '../public', 'favicon.ico')))
 app.use(
-    loggerMorgan('dev', {
-        skip: function (req, res) {
-            return (
-                req.originalUrl === CaptainConstants.healthCheckEndPoint ||
-                req.originalUrl.startsWith(
-                    CaptainConstants.netDataRelativePath + '/'
-                )
+    loggerMorgan(
+        function (tokens, req, res) {
+            const requestUrl = tokens.url(req, res) || '-'
+            const safeUrl = requestUrl.replace(
+                /(token|password|secret|auth|key)=([^&\s]+)/gi,
+                '$1=[REDACTED]'
             )
+            return `${tokens.method(req, res)} ${safeUrl} ${tokens.status(req, res) || '-'} ${tokens['response-time'](req, res) || '-'} ms`
         },
-    })
+        {
+            skip: function (req) {
+                return (
+                    req.originalUrl === CaptainConstants.healthCheckEndPoint ||
+                    req.originalUrl.startsWith(
+                        CaptainConstants.netDataRelativePath + '/'
+                    )
+                )
+            },
+        }
+    )
 )
 app.use(
     bodyParser.json({
@@ -59,15 +87,28 @@ app.use(cookieParser())
 
 if (CaptainConstants.isDebug) {
     app.use('/', function (req, res, next) {
-        res.setHeader('Access-Control-Allow-Origin', '*')
-        res.setHeader('Access-Control-Allow-Credentials', 'true')
-        res.setHeader(
-            'Access-Control-Allow-Headers',
-            `${CaptainConstants.headerNamespace},${CaptainConstants.headerAuth},Content-Type`
-        )
+        const origin = req.get('Origin')
+        if (origin && debugCorsOrigins.has(origin)) {
+            res.setHeader('Access-Control-Allow-Origin', origin)
+            res.setHeader('Vary', 'Origin')
+            res.setHeader('Access-Control-Allow-Credentials', 'true')
+            res.setHeader(
+                'Access-Control-Allow-Headers',
+                `${CaptainConstants.headerNamespace},${CaptainConstants.headerAuth},Content-Type`
+            )
+            res.setHeader(
+                'Access-Control-Allow-Methods',
+                'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+            )
+            res.setHeader('Access-Control-Max-Age', '600')
+        }
 
         if (req.method === 'OPTIONS') {
-            res.sendStatus(200)
+            if (origin && debugCorsOrigins.has(origin)) {
+                res.sendStatus(204)
+            } else {
+                res.sendStatus(403)
+            }
         } else {
             next()
         }
@@ -85,12 +126,39 @@ if (CaptainConstants.isDebug) {
 app.use(Injector.injectGlobal())
 
 app.use(function (req, res, next) {
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('X-Frame-Options', 'DENY')
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+    res.setHeader(
+        'Permissions-Policy',
+        'camera=(), microphone=(), geolocation=(), usb=()'
+    )
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-site')
+    res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self' data:"
+    )
+
+    if (req.path.startsWith('/api/') || req.path.startsWith('/net-data')) {
+        res.setHeader('Cache-Control', 'no-store')
+    }
+
+    const requestIsSsl = getTrustedProtocol(req) === 'https'
+    if (res.locals.forceSsl && requestIsSsl) {
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000')
+    }
+
+    next()
+})
+
+app.use(function (req, res, next) {
     if (InjectionExtractor.extractGlobalsFromInjected(res).forceSsl) {
-        const isRequestSsl =
-            req.secure || req.get('X-Forwarded-Proto') === 'https'
+        const isRequestSsl = getTrustedProtocol(req) === 'https'
 
         if (!isRequestSsl) {
-            const newUrl = `https://${req.hostname}:${CaptainConstants.configs.nginxPortNumber443}${req.originalUrl}`
+            const redirectHost = getCanonicalControlHost(req)
+            const newUrl = `https://${redirectHost}:${CaptainConstants.configs.nginxPortNumber443}${req.originalUrl}`
             res.redirect(302, newUrl)
             return
         }
@@ -114,12 +182,11 @@ app.use(CaptainConstants.netDataRelativePath, function (req, res, next) {
         req.originalUrl.indexOf(CaptainConstants.netDataRelativePath + '/') !==
         0
     ) {
-        const isRequestSsl =
-            req.secure || req.get('X-Forwarded-Proto') === 'https'
+        const isRequestSsl = getTrustedProtocol(req) === 'https'
 
         const newUrl =
             (isRequestSsl ? 'https://' : 'http://') +
-            req.hostname +
+            getCanonicalControlHost(req) +
             ':' +
             (isRequestSsl
                 ? CaptainConstants.configs.nginxPortNumber443
@@ -161,10 +228,10 @@ httpProxy.on('error', function (err, req, resOriginal: http.ServerResponse) {
         0
     ) {
         resOriginal.end(
-            `Something went wrong... err:  \n NetData is not running! Are you sure you have started it?`
+            'NetData is not running. Are you sure you have started it?'
         )
     } else {
-        resOriginal.end(`Something went wrong... err: \n ${err ? err : 'NULL'}`)
+        resOriginal.end('NetData proxy failed.')
     }
 })
 

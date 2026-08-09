@@ -48,6 +48,7 @@ import { IImageSource } from '../models/IImageSource'
 import { AnyError } from '../models/OtherTypes'
 import CaptainConstants from '../utils/CaptainConstants'
 import GitHelper from '../utils/GitHelper'
+import { isSafeArchivePath, safeTarExtractOptions } from '../utils/SafeTar'
 import BuildLog from './BuildLog'
 import DockerRegistryHelper from './DockerRegistryHelper'
 import TemplateHelper from './TemplateHelper'
@@ -99,6 +100,18 @@ export default class ImageMaker {
         envVars: IAppEnvVar[]
     ): Promise<IBuiltImage> {
         const self = this
+
+        if (
+            captainDefinitionRelativeFilePath &&
+            !isSafeArchivePath(captainDefinitionRelativeFilePath)
+        ) {
+            return Promise.reject(
+                ApiStatusCodes.createError(
+                    ApiStatusCodes.ILLEGAL_PARAMETER,
+                    'Captain definition path must stay inside the build source'
+                )
+            )
+        }
 
         const logs = self.buildLogsManager.getAppBuildLogs(appName)
 
@@ -327,6 +340,7 @@ export default class ImageMaker {
                         .extract({
                             file: srcTar.uploadedTarPath,
                             cwd: destDirectory,
+                            ...safeTarExtractOptions(),
                         })
                         .then(function () {
                             return srcTar.gitHash
@@ -444,21 +458,31 @@ export default class ImageMaker {
                 } else if (data.dockerfileLines) {
                     return data.dockerfileLines.join('\n')
                 } else if (data.dockerfilePath) {
-                    if (data.dockerfilePath.startsWith('..')) {
+                    if (!isSafeArchivePath(data.dockerfilePath)) {
                         throw ApiStatusCodes.createError(
                             ApiStatusCodes.STATUS_ERROR_GENERIC,
-                            'dockerfilePath should not refer to parent directory!'
+                            'dockerfilePath must stay inside the build source'
                         )
                     }
 
-                    return fs
-                        .readFileSync(
-                            path.join(
-                                directoryWithCaptainDefinition,
-                                data.dockerfilePath
-                            )
+                    const sourceRoot = path.resolve(
+                        directoryWithCaptainDefinition
+                    )
+                    const dockerfilePath = path.resolve(
+                        sourceRoot,
+                        data.dockerfilePath
+                    )
+                    if (
+                        dockerfilePath !== sourceRoot &&
+                        !dockerfilePath.startsWith(`${sourceRoot}${path.sep}`)
+                    ) {
+                        throw ApiStatusCodes.createError(
+                            ApiStatusCodes.STATUS_ERROR_GENERIC,
+                            'dockerfilePath must stay inside the build source'
                         )
-                        .toString()
+                    }
+
+                    return fs.readFileSync(dockerfilePath).toString()
                 } else if (data.imageName) {
                     throw ApiStatusCodes.createError(
                         ApiStatusCodes.STATUS_ERROR_GENERIC,

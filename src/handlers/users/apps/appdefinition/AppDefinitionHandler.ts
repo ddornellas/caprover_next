@@ -3,6 +3,8 @@ import { ICaptainDefinition } from '../../../../models/ICaptainDefinition'
 import ServiceManager from '../../../../user/ServiceManager'
 import CaptainConstants from '../../../../utils/CaptainConstants'
 import Logger from '../../../../utils/Logger'
+import { REDACTED, restoreRedactedSecrets } from '../../../../utils/Redact'
+import { isSafeArchivePath } from '../../../../utils/SafeTar'
 
 import ApiStatusCodes from '../../../../api/ApiStatusCodes'
 import {
@@ -102,9 +104,14 @@ export interface GetAllAppDefinitionsResult extends BaseHandlerResult {
     }
 }
 
+export interface GetAllAppDefinitionsOptions {
+    redactSecrets?: boolean
+}
+
 export async function getAllAppDefinitions(
     dataStore: DataStore,
-    serviceManager: ServiceManager
+    serviceManager: ServiceManager,
+    options: GetAllAppDefinitionsOptions = {}
 ): Promise<GetAllAppDefinitionsResult> {
     Logger.d('Getting all app definitions started')
 
@@ -113,13 +120,43 @@ export async function getAllAppDefinitions(
         const appsArray: any[] = []
 
         Object.keys(apps).forEach(function (key) {
-            const app = apps[key]
+            const app = JSON.parse(JSON.stringify(apps[key]))
             app.appName = key
             app.isAppBuilding = serviceManager.isAppBuilding(key)
             app.status =
                 Number(app.instanceCount) === 0 ? 'paused' : 'published'
             app.isLegacyAppName = !!app.isLegacyAppName
             app.appPushWebhook = app.appPushWebhook || undefined
+            if (app.appPushWebhook?.repoInfo) {
+                // Git passwords and private keys are credentials, not app
+                // metadata. Keep the response shape but never return them to
+                // browser/CLI callers. PATCH preserves these values when the
+                // redaction marker is submitted back.
+                app.appPushWebhook.repoInfo.password = app.appPushWebhook
+                    .repoInfo.password
+                    ? '[REDACTED]'
+                    : ''
+                app.appPushWebhook.repoInfo.sshKey = app.appPushWebhook.repoInfo
+                    .sshKey
+                    ? '[REDACTED]'
+                    : ''
+            }
+            if (options.redactSecrets) {
+                if (app.appDeployTokenConfig) {
+                    app.appDeployTokenConfig = {
+                        ...app.appDeployTokenConfig,
+                        appDeployToken: app.appDeployTokenConfig.appDeployToken
+                            ? REDACTED
+                            : undefined,
+                    }
+                }
+                if (app.appPushWebhook) {
+                    app.appPushWebhook.pushWebhookToken = app.appPushWebhook
+                        .pushWebhookToken
+                        ? REDACTED
+                        : ''
+                }
+            }
             appsArray.push(app)
         })
 
@@ -269,12 +306,47 @@ export async function patchAppDefinition(
         if (key === 'appName') {
             continue
         } else if (key === 'appPushWebhook') {
-            overrides.repoInfo = (patch.appPushWebhook as any)?.repoInfo
+            const requestedRepoInfo = (patch.appPushWebhook as any)?.repoInfo
+            if (requestedRepoInfo) {
+                const currentRepoInfo = base.repoInfo || {}
+                overrides.repoInfo = {
+                    ...requestedRepoInfo,
+                    password:
+                        requestedRepoInfo.password === '[REDACTED]' ||
+                        !requestedRepoInfo.password
+                            ? currentRepoInfo.password
+                            : requestedRepoInfo.password,
+                    sshKey:
+                        requestedRepoInfo.sshKey === '[REDACTED]' ||
+                        !requestedRepoInfo.sshKey
+                            ? currentRepoInfo.sshKey
+                            : requestedRepoInfo.sshKey,
+                }
+            } else {
+                overrides.repoInfo = undefined
+            }
         } else if (key === 'httpAuth') {
             const requestedAuth = patch.httpAuth as
                 Record<string, unknown> | null | undefined
             overrides.httpAuth = requestedAuth
                 ? { ...(base.httpAuth || {}), ...requestedAuth }
+                : undefined
+        } else if (key === 'appDeployTokenConfig') {
+            const requestedTokenConfig = patch.appDeployTokenConfig as
+                AppDeployTokenConfig | undefined
+            const currentTokenConfig = base.appDeployTokenConfig || {
+                enabled: false,
+            }
+            overrides.appDeployTokenConfig = requestedTokenConfig
+                ? {
+                      ...requestedTokenConfig,
+                      appDeployToken:
+                          requestedTokenConfig.appDeployToken ===
+                              '[REDACTED]' ||
+                          !requestedTokenConfig.appDeployToken
+                              ? currentTokenConfig.appDeployToken
+                              : requestedTokenConfig.appDeployToken,
+                  }
                 : undefined
         } else if (key in base) {
             ;(overrides as any)[key] = patch[key]
@@ -288,7 +360,9 @@ export async function patchAppDefinition(
 
 export async function updateAppDefinition(
     params: UpdateAppDefinitionParams,
-    serviceManager: ServiceManager
+    serviceManager: ServiceManager,
+    currentRepoInfo?: RepoInfo,
+    currentDeployTokenConfig?: AppDeployTokenConfig
 ): Promise<BaseHandlerResult> {
     const {
         appName,
@@ -329,21 +403,44 @@ export async function updateAppDefinition(
     const normalizedPreDeployFunction = `${preDeployFunction || ''}`
     const normalizedServiceUpdateOverride = `${serviceUpdateOverride || ''}`
 
+    if (
+        captainDefinitionRelativeFilePath &&
+        !isSafeArchivePath(captainDefinitionRelativeFilePath)
+    ) {
+        throw ApiStatusCodes.createError(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'captainDefinitionRelativeFilePath must stay inside the uploaded source'
+        )
+    }
+
     let normalizedDeployTokenConfig: AppDeployTokenConfig | undefined
     if (!appDeployTokenConfig) {
-        normalizedDeployTokenConfig = { enabled: false }
+        // Omitted server-owned secrets must never be interpreted as a request
+        // to disable or erase them. Explicit `{ enabled: false }` remains the
+        // supported way to disable an app token.
+        normalizedDeployTokenConfig = currentDeployTokenConfig
+            ? { ...currentDeployTokenConfig }
+            : { enabled: false }
     } else {
         normalizedDeployTokenConfig = {
             enabled: !!appDeployTokenConfig.enabled,
             appDeployToken: `${
-                appDeployTokenConfig.appDeployToken
-                    ? appDeployTokenConfig.appDeployToken
-                    : ''
+                appDeployTokenConfig.appDeployToken === '[REDACTED]' ||
+                (!appDeployTokenConfig.appDeployToken &&
+                    currentDeployTokenConfig?.enabled)
+                    ? currentDeployTokenConfig?.appDeployToken
+                    : appDeployTokenConfig.appDeployToken
+                      ? appDeployTokenConfig.appDeployToken
+                      : ''
             }`.trim(),
         }
     }
 
-    const repoInfo: any = inputRepoInfo || {}
+    const repoInfo: any = inputRepoInfo
+        ? restoreRedactedSecrets(currentRepoInfo, inputRepoInfo)
+        : currentRepoInfo
+          ? { ...currentRepoInfo }
+          : {}
 
     if (repoInfo.user) {
         repoInfo.user = repoInfo.user.trim()

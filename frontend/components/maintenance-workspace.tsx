@@ -287,6 +287,16 @@ export function MaintenanceWorkspace() {
                             certificates, domains, and app definitions.
                             Application volumes and images are not included.
                         </p>
+                        <Alert className="border-amber-300 bg-amber-50 text-amber-950 dark:bg-amber-950/20 dark:text-amber-100">
+                            <AlertTriangle className="h-4 w-4" />
+                            <AlertTitle>
+                                Treat the download as a secret
+                            </AlertTitle>
+                            <AlertDescription>
+                                Store it encrypted with restricted access. It
+                                can contain credentials and recovery material.
+                            </AlertDescription>
+                        </Alert>
                         <Button
                             type="button"
                             disabled={working}

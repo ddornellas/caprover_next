@@ -4,20 +4,39 @@ import BaseApi from '../../api/BaseApi'
 import DataStoreProvider from '../../datastore/DataStoreProvider'
 import InjectionExtractor from '../../injection/InjectionExtractor'
 import Authenticator from '../../user/Authenticator'
+import { auditFromRequest } from '../../user/AuditLogger'
 import {
     CapRoverEventFactory,
     CapRoverEventType,
 } from '../../user/events/ICapRoverEvent'
 import CaptainConstants from '../../utils/CaptainConstants'
-import CircularQueue from '../../utils/CircularQueue'
+import {
+    getRequestClientKey,
+    getTrustedProtocol,
+    RateLimiter,
+} from '../../utils/RateLimiter'
 
 const router = express.Router()
 
-const failedLoginCircularTimestamps = new CircularQueue<number>(5)
+// Keep this per source instead of one global queue. A failed attempt from one
+// client must not lock every administrator out of the control plane.
+const loginRateLimiter = new RateLimiter(10, 60_000)
 
 router.post('/', function (req, res, next) {
     const password = `${req.body.password || ''}`
     const otpToken = `${req.body.otpToken || ''}`
+
+    const rateLimit = loginRateLimiter.consume(getRequestClientKey(req))
+    if (!rateLimit.allowed) {
+        res.setHeader('Retry-After', `${rateLimit.retryAfterSeconds}`)
+        res.status(429).send(
+            new BaseApi(
+                ApiStatusCodes.STATUS_PASSWORD_BACK_OFF,
+                'Too many login attempts. Please wait and try again.'
+            )
+        )
+        return
+    }
 
     if (!password) {
         const response = new BaseApi(
@@ -28,11 +47,11 @@ router.post('/', function (req, res, next) {
         return
     }
 
-    // if password is more than 29 characters, return error
-    if (password.length > 29) {
+    // Keep accepting the historical range while allowing modern passphrases.
+    if (password.length > 256) {
         const response = new BaseApi(
             ApiStatusCodes.STATUS_ERROR_GENERIC,
-            'password is too long - maximum 29 characters. If you had previously set a password longer than 29 characters, please use the first 29 characters.'
+            'password is too long - maximum 256 characters.'
         )
         res.send(response)
         return
@@ -49,6 +68,7 @@ router.post('/', function (req, res, next) {
     const otpAuthenticatorForLoginOnly =
         userManagerForLoginOnly.otpAuthenticator
     const eventLoggerForLoginOnly = userManagerForLoginOnly.eventLogger
+    const dataStoreForLogin = DataStoreProvider.getDataStore(namespace)
 
     let loadedHashedPassword = ''
 
@@ -65,17 +85,7 @@ router.post('/', function (req, res, next) {
             }
         })
         .then(function () {
-            const oldestKnownFailedLogin = failedLoginCircularTimestamps.peek()
-            if (
-                oldestKnownFailedLogin &&
-                new Date().getTime() - oldestKnownFailedLogin < 30000
-            )
-                throw ApiStatusCodes.createError(
-                    ApiStatusCodes.STATUS_PASSWORD_BACK_OFF,
-                    'Too many wrong passwords... Wait for 30 seconds and retry.'
-                )
-
-            return DataStoreProvider.getDataStore(namespace).getHashedPassword()
+            return dataStoreForLogin.getHashedPassword()
         })
         .then(function (savedHashedPassword) {
             loadedHashedPassword = savedHashedPassword
@@ -96,11 +106,20 @@ router.post('/', function (req, res, next) {
             )
         })
         .then(function (cookieAuth) {
+            loginRateLimiter.reset(getRequestClientKey(req))
+            void auditFromRequest(
+                dataStoreForLogin,
+                req,
+                'auth.login',
+                'success',
+                'root-session'
+            )
             res.cookie(CaptainConstants.headerCookieAuth, cookieAuth, {
                 httpOnly: true,
                 sameSite: 'lax',
-                secure: req.secure || req.get('X-Forwarded-Proto') === 'https',
+                secure: getTrustedProtocol(req) === 'https',
                 path: '/',
+                maxAge: 12 * 60 * 60 * 1000,
             })
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
@@ -109,32 +128,30 @@ router.post('/', function (req, res, next) {
             baseApi.data = { token: authToken }
             eventLoggerForLoginOnly.trackEvent(
                 CapRoverEventFactory.create(CapRoverEventType.UserLoggedIn, {
-                    ip: req.headers['x-real-ip'] || 'unknown',
+                    ip: getRequestClientKey(req),
                 })
             )
             res.send(baseApi)
         })
-        .catch(function (err) {
-            return new Promise(function (resolve, reject) {
-                if (
-                    err &&
-                    err.captainErrorType &&
-                    err.captainErrorType ===
-                        ApiStatusCodes.STATUS_WRONG_PASSWORD
-                ) {
-                    failedLoginCircularTimestamps.push(new Date().getTime())
-                }
-                reject(err)
-            })
+        .catch(function (error) {
+            void auditFromRequest(
+                dataStoreForLogin,
+                req,
+                'auth.login',
+                error?.captainErrorType === ApiStatusCodes.STATUS_WRONG_PASSWORD
+                    ? 'denied'
+                    : 'failure',
+                'anonymous'
+            )
+            ApiStatusCodes.createCatcher(res)(error)
         })
-        .catch(ApiStatusCodes.createCatcher(res))
 })
 
 router.post('/logout/', function (req, res) {
     res.clearCookie(CaptainConstants.headerCookieAuth, {
         httpOnly: true,
         sameSite: 'lax',
-        secure: req.secure || req.get('X-Forwarded-Proto') === 'https',
+        secure: getTrustedProtocol(req) === 'https',
         path: '/',
     })
     res.send(new BaseApi(ApiStatusCodes.STATUS_OK, 'Logout succeeded'))

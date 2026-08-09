@@ -1,5 +1,5 @@
 import jwt = require('jsonwebtoken')
-import { randomBytes } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import ApiStatusCodes from '../api/ApiStatusCodes'
 import { IHashMapGeneric } from '../models/ICacheGeneric'
 import { UserJwt } from '../models/UserJwt'
@@ -13,6 +13,15 @@ const captainDefaultPassword = EnvVar.DEFAULT_PASSWORD ?? 'captain42'
 const COOKIE_AUTH_SUFFIX = 'cookie-'
 const WEBHOOK_APP_PUSH_SUFFIX = '-webhook-app-push'
 const DOWNLOAD_TOKEN = '-download-token'
+const PASSWORD_HASH_V2_PREFIX = 'v2$'
+
+function getPasswordMaterial(encryptionKey: string, password: string) {
+    return createHash('sha256')
+        .update(encryptionKey)
+        .update('\0')
+        .update(password)
+        .digest('hex')
+}
 
 function generateSecureRandomString(length: number): string {
     if (length <= 0) {
@@ -65,10 +74,15 @@ class Authenticator {
 
         return Promise.resolve()
             .then(function () {
-                if (!oldPass || !newPass || newPass.length < 8) {
+                if (
+                    !oldPass ||
+                    !newPass ||
+                    newPass.length < 8 ||
+                    newPass.length > 256
+                ) {
                     throw ApiStatusCodes.createError(
                         ApiStatusCodes.STATUS_ERROR_GENERIC,
-                        'Password is too small.'
+                        'Password must be between 8 and 256 characters.'
                     )
                 }
 
@@ -84,10 +98,12 @@ class Authenticator {
 
                 self.tokenVersion = generateSecureRandomString(64)
 
-                const hashed = bcrypt.hashSync(
-                    self.encryptionKey + newPass,
-                    bcrypt.genSaltSync(10)
-                )
+                const hashed =
+                    PASSWORD_HASH_V2_PREFIX +
+                    bcrypt.hashSync(
+                        getPasswordMaterial(self.encryptionKey, newPass),
+                        bcrypt.genSaltSync(10)
+                    )
 
                 return hashed
             })
@@ -107,10 +123,17 @@ class Authenticator {
                 throw new Error('Encryption key is not set!')
             }
 
-            return bcrypt.compareSync(
-                self.encryptionKey + password,
-                savedHashedPassword
-            )
+            const savedHash = `${savedHashedPassword}`
+            if (savedHash.startsWith(PASSWORD_HASH_V2_PREFIX)) {
+                return bcrypt.compareSync(
+                    getPasswordMaterial(self.encryptionKey, password),
+                    savedHash.substring(PASSWORD_HASH_V2_PREFIX.length)
+                )
+            }
+
+            // Keep accepting hashes created before v2. New password changes
+            // use the versioned pre-hash so bcrypt cannot truncate passphrases.
+            return bcrypt.compareSync(self.encryptionKey + password, savedHash)
         })
     }
 
@@ -171,7 +194,11 @@ class Authenticator {
                         data: userObj,
                     },
                     self.encryptionKey + (keySuffix ? keySuffix : ''),
-                    { expiresIn: '480h' }
+                    {
+                        algorithm: 'HS256',
+                        expiresIn:
+                            keySuffix === COOKIE_AUTH_SUFFIX ? '12h' : '480h',
+                    }
                 )
             })
     }
@@ -187,9 +214,25 @@ class Authenticator {
             jwt.verify(
                 `${token}`,
                 self.encryptionKey + (keySuffix ? keySuffix : ''),
+                { algorithms: ['HS256'] },
                 function (err, rawDecoded: { data: UserJwt }) {
                     if (err) {
                         Logger.e(err)
+                        reject(
+                            ApiStatusCodes.createError(
+                                ApiStatusCodes.STATUS_AUTH_TOKEN_INVALID,
+                                'Auth token corrupted'
+                            )
+                        )
+                        return
+                    }
+
+                    if (
+                        !rawDecoded ||
+                        typeof rawDecoded !== 'object' ||
+                        !rawDecoded.data ||
+                        typeof rawDecoded.data !== 'object'
+                    ) {
                         reject(
                             ApiStatusCodes.createError(
                                 ApiStatusCodes.STATUS_AUTH_TOKEN_INVALID,
@@ -288,7 +331,9 @@ class Authenticator {
                         data: obj,
                     },
                     self.encryptionKey + (keySuffix ?? ''),
-                    expiresIn ? { expiresIn: expiresIn as any } : undefined
+                    expiresIn
+                        ? { algorithm: 'HS256', expiresIn: expiresIn as any }
+                        : { algorithm: 'HS256' }
                 )
             })
     }
@@ -300,9 +345,25 @@ class Authenticator {
             jwt.verify(
                 `${token}`,
                 self.encryptionKey + (keySuffix ?? ''),
+                { algorithms: ['HS256'] },
                 function (err, rawDecoded: { data: any }) {
                     if (err) {
                         Logger.e(err)
+                        reject(
+                            ApiStatusCodes.createError(
+                                ApiStatusCodes.STATUS_AUTH_TOKEN_INVALID,
+                                'Token corrupted'
+                            )
+                        )
+                        return
+                    }
+
+                    if (
+                        !rawDecoded ||
+                        typeof rawDecoded !== 'object' ||
+                        !rawDecoded.data ||
+                        typeof rawDecoded.data !== 'object'
+                    ) {
                         reject(
                             ApiStatusCodes.createError(
                                 ApiStatusCodes.STATUS_AUTH_TOKEN_INVALID,

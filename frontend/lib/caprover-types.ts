@@ -130,6 +130,21 @@ export interface SystemInfo {
     forceSsl: boolean
     rootDomain: string
     captainSubDomain: string
+    passwordConfigured?: boolean
+    twoFactorEnabled?: boolean
+    agentKeyCount?: number
+    expiringAgentKeyCount?: number
+}
+
+export interface AuditEvent {
+    id: string
+    at: string
+    action: string
+    outcome: 'success' | 'failure' | 'denied'
+    actor: string
+    ip?: string
+    resource?: string
+    metadata?: Record<string, string | number | boolean | undefined>
 }
 
 export interface VersionInfo {

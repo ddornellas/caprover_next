@@ -675,7 +675,7 @@ function PasswordField({
                 type="password"
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
-                maxLength={29}
+                maxLength={256}
                 required
             />
         </div>

@@ -11,8 +11,10 @@ import { IAppDef } from '../../../models/AppDefinition'
 import { AutomatedCleanupConfigsCleaner } from '../../../models/AutomatedCleanupConfigs'
 import CaptainManager from '../../../user/system/CaptainManager'
 import VersionManager from '../../../user/system/VersionManager'
+import { auditFromRequest } from '../../../user/AuditLogger'
 import CaptainConstants from '../../../utils/CaptainConstants'
 import Logger from '../../../utils/Logger'
+import { redactSensitive, restoreRedactedSecrets } from '../../../utils/Redact'
 import Utils from '../../../utils/Utils'
 import ThemesRouter from './ThemesRouter'
 import SystemRouteSelfHostRegistry from './selfhostregistry/SystemRouteSelfHostRegistry'
@@ -24,12 +26,21 @@ router.use('/themes/', ThemesRouter)
 
 router.post('/createbackup/', function (req, res, next) {
     const backupManager = CaptainManager.get().getBackupManager()
+    const dataStore =
+        InjectionExtractor.extractUserFromInjected(res).user.dataStore
 
     Promise.resolve()
         .then(function () {
             return backupManager.createBackup(CaptainManager.get())
         })
         .then(function (backupInfo) {
+            void auditFromRequest(
+                dataStore,
+                req,
+                'backup.create',
+                'success',
+                'root-session'
+            )
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'Backup created.'
@@ -37,7 +48,16 @@ router.post('/createbackup/', function (req, res, next) {
             baseApi.data = backupInfo
             res.send(baseApi)
         })
-        .catch(ApiStatusCodes.createCatcher(res))
+        .catch(function (error) {
+            void auditFromRequest(
+                dataStore,
+                req,
+                'backup.create',
+                'failure',
+                'root-session'
+            )
+            ApiStatusCodes.createCatcher(res)(error)
+        })
 })
 
 router.post('/changerootdomain/', function (req, res, next) {
@@ -63,6 +83,14 @@ router.post('/changerootdomain/', function (req, res, next) {
     CaptainManager.get()
         .changeCaptainRootDomain(requestedCustomDomain, !!req.body.force)
         .then(function () {
+            void auditFromRequest(
+                InjectionExtractor.extractUserFromInjected(res).user.dataStore,
+                req,
+                'system.root_domain.change',
+                'success',
+                'root-session',
+                requestedCustomDomain
+            )
             res.send(
                 new BaseApi(ApiStatusCodes.STATUS_OK, 'Root domain changed.')
             )
@@ -101,6 +129,13 @@ router.post('/enablessl/', function (req, res, next) {
             return Utils.getDelayedPromise(7000)
         })
         .then(function () {
+            void auditFromRequest(
+                InjectionExtractor.extractUserFromInjected(res).user.dataStore,
+                req,
+                'system.ssl.enable',
+                'success',
+                'root-session'
+            )
             res.send(new BaseApi(ApiStatusCodes.STATUS_OK, 'Root SSL Enabled.'))
         })
         .catch(ApiStatusCodes.createCatcher(res))
@@ -112,6 +147,15 @@ router.post('/forcessl/', function (req, res, next) {
     CaptainManager.get()
         .forceSsl(isEnabled)
         .then(function () {
+            void auditFromRequest(
+                InjectionExtractor.extractUserFromInjected(res).user.dataStore,
+                req,
+                'system.ssl.force',
+                'success',
+                'root-session',
+                undefined,
+                { enabled: isEnabled }
+            )
             res.send(
                 new BaseApi(
                     ApiStatusCodes.STATUS_OK,
@@ -132,7 +176,15 @@ router.get('/info/', function (req, res, next) {
         .then(function () {
             return dataStore.getHasRootSsl()
         })
-        .then(function (hasRootSsl) {
+        .then(async function (hasRootSsl) {
+            const [hashedPassword, twoFactorEnabled, agentKeys] =
+                await Promise.all([
+                    dataStore.getHashedPassword(),
+                    InjectionExtractor.extractUserFromInjected(
+                        res
+                    ).user.otpAuthenticator.is2FactorEnabled(),
+                    dataStore.getAgentKeys(),
+                ])
             return {
                 hasRootSsl: hasRootSsl,
                 forceSsl: CaptainManager.get().getForceSslValue(),
@@ -140,6 +192,16 @@ router.get('/info/', function (req, res, next) {
                     ? dataStore.getRootDomain()
                     : '',
                 captainSubDomain: CaptainConstants.configs.captainSubDomain,
+                passwordConfigured: !!hashedPassword,
+                twoFactorEnabled,
+                agentKeyCount: agentKeys.length,
+                expiringAgentKeyCount: agentKeys.filter(
+                    (key) =>
+                        !key.revokedAt &&
+                        !!key.expiresAt &&
+                        Date.parse(key.expiresAt) > Date.now() &&
+                        Date.parse(key.expiresAt) - Date.now() < 30 * 86400000
+                ).length,
             }
         })
         .then(function (data) {
@@ -148,6 +210,31 @@ router.get('/info/', function (req, res, next) {
                 'Captain info retrieved'
             )
             baseApi.data = data
+            res.send(baseApi)
+        })
+        .catch(ApiStatusCodes.createCatcher(res))
+})
+
+router.get('/audit/', function (req, res, next) {
+    const dataStore =
+        InjectionExtractor.extractUserFromInjected(res).user.dataStore
+    const requestedLimit = Number(req.query.limit || 100)
+    const limit = Number.isFinite(requestedLimit)
+        ? Math.min(200, Math.max(1, requestedLimit))
+        : 100
+
+    return dataStore
+        .getAuditEvents()
+        .then(function (events) {
+            const action = `${req.query.action || ''}`.trim()
+            const filtered = action
+                ? events.filter((event) => event.action === action)
+                : events
+            const baseApi = new BaseApi(
+                ApiStatusCodes.STATUS_OK,
+                'Audit events retrieved'
+            )
+            baseApi.data = { events: filtered.slice(-limit).reverse() }
             res.send(baseApi)
         })
         .catch(ApiStatusCodes.createCatcher(res))
@@ -200,6 +287,14 @@ router.post('/versionInfo/', function (req, res, next) {
             )
         })
         .then(function () {
+            void auditFromRequest(
+                InjectionExtractor.extractUserFromInjected(res).user.dataStore,
+                req,
+                'system.update.start',
+                'success',
+                'root-session',
+                `${latestVersion || ''}`
+            )
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'Captain update process has started...'
@@ -253,7 +348,9 @@ router.get('/netdata/', function (req, res, next) {
 
     return Promise.resolve()
         .then(function () {
-            return dataStore.getNetDataInfo()
+            return dataStore
+                .getNetDataInfo()
+                .then((data) => redactSensitive(data))
         })
         .then(function (data) {
             data.netDataUrl = `${
@@ -272,13 +369,36 @@ router.get('/netdata/', function (req, res, next) {
 })
 
 router.post('/netdata/', function (req, res, next) {
-    const netDataInfo = req.body.netDataInfo
+    const dataStore =
+        InjectionExtractor.extractUserFromInjected(res).user.dataStore
+    const requestedNetDataInfo = req.body?.netDataInfo
+    if (
+        !requestedNetDataInfo ||
+        typeof requestedNetDataInfo !== 'object' ||
+        Array.isArray(requestedNetDataInfo)
+    ) {
+        res.send(
+            new BaseApi(
+                ApiStatusCodes.ILLEGAL_PARAMETER,
+                'netDataInfo must be an object'
+            )
+        )
+        return
+    }
+
+    const netDataInfo = { ...(requestedNetDataInfo as Record<string, unknown>) }
     netDataInfo.netDataUrl = undefined // Frontend app returns this value, but we really don't wanna save this.
     // root address is subject to change.
 
     return Promise.resolve()
         .then(function () {
-            return CaptainManager.get().updateNetDataInfo(netDataInfo)
+            return dataStore
+                .getNetDataInfo()
+                .then((current) =>
+                    CaptainManager.get().updateNetDataInfo(
+                        restoreRedactedSecrets(current, netDataInfo)
+                    )
+                )
         })
         .then(function () {
             const baseApi = new BaseApi(
@@ -335,7 +455,12 @@ router.get('/goaccess/:appName/files', async function (req, res, next) {
 
     const appName = req.params.appName
 
-    if (!appName) {
+    if (
+        !appName ||
+        appName !== path.basename(appName) ||
+        appName.includes('..') ||
+        appName.includes('\\')
+    ) {
         const baseApi = new BaseApi(
             ApiStatusCodes.STATUS_ERROR_GENERIC,
             'Invalid appName'
@@ -443,6 +568,22 @@ router.get('/goaccess/:appName/files', async function (req, res, next) {
 
 router.get('/goaccess/:appName/files/:file', async function (req, res, next) {
     const { appName, file } = req.params
+    if (
+        !appName ||
+        appName !== path.basename(appName) ||
+        appName.includes('..') ||
+        !file ||
+        file !== path.basename(file) ||
+        file.includes('\\') ||
+        file.includes('\0') ||
+        !file.endsWith('.html')
+    ) {
+        res.send(
+            new BaseApi(ApiStatusCodes.ILLEGAL_PARAMETER, 'Invalid report path')
+        )
+        return
+    }
+
     const { domainName, fileName } = CaptainManager.get()
         .getLoadBalanceManager()
         .parseLogPath(file)
@@ -581,16 +722,35 @@ router.post('/nodes/', function (req, res, next) {
     }
 
     const privateKey = req.body.privateKey
-    const remoteNodeIpAddress = req.body.remoteNodeIpAddress
-    const captainIpAddress = req.body.captainIpAddress
-    const sshPort = parseInt(req.body.sshPort) || 22
-    const sshUser = (req.body.sshUser || 'root').trim()
+    const remoteNodeIpAddress = `${req.body.remoteNodeIpAddress || ''}`.trim()
+    const captainIpAddress = `${req.body.captainIpAddress || ''}`.trim()
+    const rawSshPort = req.body.sshPort
+    const sshPort =
+        rawSshPort === undefined || rawSshPort === '' ? 22 : Number(rawSshPort)
+    const sshUser =
+        req.body.sshUser === undefined
+            ? 'root'
+            : typeof req.body.sshUser === 'string'
+              ? req.body.sshUser.trim()
+              : ''
 
-    if (!captainIpAddress || !remoteNodeIpAddress || !privateKey) {
+    if (
+        !captainIpAddress ||
+        !remoteNodeIpAddress ||
+        !privateKey ||
+        !/^[a-z0-9_.:\[\]-]{1,253}$/i.test(captainIpAddress) ||
+        !/^[a-z0-9_.:\[\]-]{1,253}$/i.test(remoteNodeIpAddress) ||
+        !Number.isInteger(sshPort) ||
+        sshPort < 1 ||
+        sshPort > 65535 ||
+        !/^[a-z_][a-z0-9_-]{0,31}$/i.test(sshUser) ||
+        typeof privateKey !== 'string' ||
+        privateKey.length > 100_000
+    ) {
         res.send(
             new BaseApi(
-                ApiStatusCodes.STATUS_ERROR_GENERIC,
-                'Private Key, Captain IP address, remote IP address and remote username should all be present'
+                ApiStatusCodes.ILLEGAL_PARAMETER,
+                'Private key, IPv4 addresses, SSH username and a valid SSH port are required'
             )
         )
         return

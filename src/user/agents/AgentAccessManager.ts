@@ -14,11 +14,33 @@ import {
 import { ICaptainDefinition } from '../../models/ICaptainDefinition'
 import type ServiceManager from '../ServiceManager'
 import type DataStore from '../../datastore/DataStore'
+import { recordAuditEvent } from '../AuditLogger'
 import Logger from '../../utils/Logger'
+import { redactText } from '../../utils/Redact'
 
 const AGENT_KEY_PREFIX = 'cr_agent_'
 const MAX_KEY_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000
 const DEPLOYMENT_REQUEST_TTL_MS = 30 * 60 * 1000
+const MAX_DEPLOYMENT_REQUESTS = 500
+const MAX_DEPLOYMENT_REQUEST_AGE_MS = 30 * 24 * 60 * 60 * 1000
+const storeMutationQueues = new WeakMap<object, Promise<void>>()
+
+async function withStoreMutation<T>(
+    store: AgentAccessStore,
+    operation: () => Promise<T>
+): Promise<T> {
+    const storeObject = store as object
+    const previous = storeMutationQueues.get(storeObject) || Promise.resolve()
+    const current = previous.then(operation)
+    storeMutationQueues.set(
+        storeObject,
+        current.then(
+            () => undefined,
+            () => undefined
+        )
+    )
+    return current
+}
 
 export interface AgentAccessStore {
     getAgentKeys(): Promise<AgentKeyRecord[]>
@@ -42,6 +64,58 @@ export interface CreateAgentDeploymentInput {
     gitHash?: unknown
     createApp?: unknown
     description?: unknown
+}
+
+function normalizeIdempotencyKey(value: unknown) {
+    if (value === undefined || value === null || value === '') return undefined
+    if (
+        typeof value !== 'string' ||
+        value.length > 128 ||
+        /[\r\n]/.test(value)
+    ) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'Idempotency-Key must be a short single-line string'
+        )
+    }
+    return value.trim() || undefined
+}
+
+function hashIdempotencyKey(value: string | undefined) {
+    return value ? createHash('sha256').update(value).digest('hex') : undefined
+}
+
+function migrateIdempotencyKeys(requests: AgentDeploymentRequest[]) {
+    return requests.map((request) => {
+        if (!request.idempotencyKey || request.idempotencyKeyHash) {
+            return request
+        }
+
+        return {
+            ...request,
+            idempotencyKeyHash: hashIdempotencyKey(request.idempotencyKey),
+            idempotencyKey: undefined,
+        }
+    })
+}
+
+function pruneDeploymentRequests(requests: AgentDeploymentRequest[]) {
+    const cutoff = Date.now() - MAX_DEPLOYMENT_REQUEST_AGE_MS
+    const retained = requests.filter((request) => {
+        const timestamp = Date.parse(request.updatedAt || request.createdAt)
+        return Number.isFinite(timestamp) && timestamp >= cutoff
+    })
+
+    return retained.length <= MAX_DEPLOYMENT_REQUESTS
+        ? retained
+        : retained
+              .slice()
+              .sort(
+                  (left, right) =>
+                      Date.parse(left.updatedAt || left.createdAt) -
+                      Date.parse(right.updatedAt || right.createdAt)
+              )
+              .slice(-MAX_DEPLOYMENT_REQUESTS)
 }
 
 function nowIso() {
@@ -143,7 +217,15 @@ export function hashAgentApiKey(apiKey: string) {
     return createHash('sha256').update(apiKey).digest('hex')
 }
 
-function hashesMatch(left: string, right: string) {
+function hashesMatch(left: string, right: unknown) {
+    if (
+        !/^[0-9a-f]{64}$/i.test(left) ||
+        typeof right !== 'string' ||
+        !/^[0-9a-f]{64}$/i.test(right)
+    ) {
+        return false
+    }
+
     const leftBuffer = Buffer.from(left, 'hex')
     const rightBuffer = Buffer.from(right, 'hex')
 
@@ -191,13 +273,15 @@ export async function createAgentKey(
         expiresAt,
     }
 
-    const keys = await store.getAgentKeys()
-    await store.setAgentKeys([...keys, record])
+    return withStoreMutation(store, async () => {
+        const keys = await store.getAgentKeys()
+        await store.setAgentKeys([...keys, record])
 
-    return {
-        apiKey,
-        metadata: toAgentKeyMetadata(record),
-    }
+        return {
+            apiKey,
+            metadata: toAgentKeyMetadata(record),
+        }
+    })
 }
 
 export async function authenticateAgentApiKey(
@@ -206,19 +290,21 @@ export async function authenticateAgentApiKey(
 ) {
     if (!apiKey || apiKey.length > 512) return undefined
 
-    const requestedHash = hashAgentApiKey(apiKey)
-    const keys = await store.getAgentKeys()
-    const record = keys.find(
-        (candidate) =>
-            isAgentKeyActive(candidate) &&
-            hashesMatch(requestedHash, candidate.tokenHash)
-    )
+    return withStoreMutation(store, async () => {
+        const requestedHash = hashAgentApiKey(apiKey)
+        const keys = await store.getAgentKeys()
+        const record = keys.find(
+            (candidate) =>
+                isAgentKeyActive(candidate) &&
+                hashesMatch(requestedHash, candidate.tokenHash)
+        )
 
-    if (!record) return undefined
+        if (!record) return undefined
 
-    record.lastUsedAt = nowIso()
-    await store.setAgentKeys(keys)
-    return record
+        record.lastUsedAt = nowIso()
+        await store.setAgentKeys(keys)
+        return record
+    })
 }
 
 export function assertAgentAppScope(record: AgentKeyRecord, appName: string) {
@@ -402,7 +488,8 @@ function normalizeDeploymentInput(input: CreateAgentDeploymentInput) {
 export async function createAgentDeploymentRequest(
     store: AgentAccessStore,
     record: AgentKeyRecord,
-    input: CreateAgentDeploymentInput
+    input: CreateAgentDeploymentInput,
+    idempotencyKey?: string
 ) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
         return error(
@@ -438,46 +525,67 @@ export async function createAgentDeploymentRequest(
     assertAgentCanDeploy(record)
     const normalized = normalizeDeploymentInput(input)
     assertAgentAppScope(record, normalized.appName)
+    const normalizedIdempotencyKey = normalizeIdempotencyKey(idempotencyKey)
+    const idempotencyKeyHash = hashIdempotencyKey(normalizedIdempotencyKey)
 
-    if (normalized.createApp) {
-        const requests = await store.getAgentDeploymentRequests()
-        const alreadyPending = requests.some(
-            (request) =>
-                request.isNewApp &&
-                request.appName === normalized.appName &&
-                request.status === 'pending' &&
-                Date.parse(request.expiresAt) > Date.now()
+    return withStoreMutation(store, async () => {
+        const requests = pruneDeploymentRequests(
+            migrateIdempotencyKeys(await store.getAgentDeploymentRequests())
         )
-        if (alreadyPending) {
-            return error(
-                ApiStatusCodes.STATUS_ERROR_ALREADY_EXIST,
-                `An approval request already exists for app: ${normalized.appName}`
+
+        if (idempotencyKeyHash) {
+            const existing = requests.find(
+                (request) =>
+                    request.agentKeyId === record.id &&
+                    (request.idempotencyKeyHash === idempotencyKeyHash ||
+                        request.idempotencyKey === normalizedIdempotencyKey) &&
+                    Date.parse(request.expiresAt) > Date.now()
             )
+            if (existing) {
+                await store.setAgentDeploymentRequests(requests)
+                return existing
+            }
         }
-    }
 
-    const createdAt = nowIso()
-    const request: AgentDeploymentRequest = {
-        id: `agent_deploy_${uuid()}`,
-        agentKeyId: record.id,
-        agentKeyName: record.name,
-        role: record.role,
-        appName: normalized.appName,
-        isNewApp: normalized.createApp,
-        description: normalized.description,
-        captainDefinition: normalized.captainDefinition,
-        gitHash: normalized.gitHash,
-        status: 'pending',
-        createdAt,
-        expiresAt: new Date(
-            Date.now() + DEPLOYMENT_REQUEST_TTL_MS
-        ).toISOString(),
-        updatedAt: createdAt,
-    }
+        if (normalized.createApp) {
+            const alreadyPending = requests.some(
+                (request) =>
+                    request.isNewApp &&
+                    request.appName === normalized.appName &&
+                    request.status === 'pending' &&
+                    Date.parse(request.expiresAt) > Date.now()
+            )
+            if (alreadyPending) {
+                return error(
+                    ApiStatusCodes.STATUS_ERROR_ALREADY_EXIST,
+                    `An approval request already exists for app: ${normalized.appName}`
+                )
+            }
+        }
 
-    const requests = await store.getAgentDeploymentRequests()
-    await store.setAgentDeploymentRequests([...requests, request])
-    return request
+        const createdAt = nowIso()
+        const request: AgentDeploymentRequest = {
+            id: `agent_deploy_${uuid()}`,
+            agentKeyId: record.id,
+            agentKeyName: record.name,
+            role: record.role,
+            appName: normalized.appName,
+            isNewApp: normalized.createApp,
+            description: normalized.description,
+            captainDefinition: normalized.captainDefinition,
+            gitHash: normalized.gitHash,
+            idempotencyKeyHash,
+            status: 'pending',
+            createdAt,
+            expiresAt: new Date(
+                Date.now() + DEPLOYMENT_REQUEST_TTL_MS
+            ).toISOString(),
+            updatedAt: createdAt,
+        }
+
+        await store.setAgentDeploymentRequests([...requests, request])
+        return request
+    })
 }
 
 export function getAgentDeploymentStatusForResponse(
@@ -513,38 +621,52 @@ async function updateDeploymentRequest(
     requestId: string,
     updater: (request: AgentDeploymentRequest) => void
 ) {
-    const requests = await store.getAgentDeploymentRequests()
-    const request = requests.find((candidate) => candidate.id === requestId)
-    if (!request) {
-        return error(ApiStatusCodes.NOT_FOUND, 'Deployment request not found')
-    }
+    return withStoreMutation(store, async () => {
+        const requests = pruneDeploymentRequests(
+            await store.getAgentDeploymentRequests()
+        )
+        const request = requests.find((candidate) => candidate.id === requestId)
+        if (!request) {
+            return error(
+                ApiStatusCodes.NOT_FOUND,
+                'Deployment request not found'
+            )
+        }
 
-    updater(request)
-    request.updatedAt = nowIso()
-    await store.setAgentDeploymentRequests(requests)
-    return request
+        updater(request)
+        request.updatedAt = nowIso()
+        await store.setAgentDeploymentRequests(requests)
+        return request
+    })
 }
 
 export async function getAgentDeploymentRequest(
     store: AgentAccessStore,
     requestId: string
 ) {
-    const requests = await store.getAgentDeploymentRequests()
-    const request = requests.find((candidate) => candidate.id === requestId)
-    if (!request) {
-        return error(ApiStatusCodes.NOT_FOUND, 'Deployment request not found')
-    }
+    return withStoreMutation(store, async () => {
+        const requests = pruneDeploymentRequests(
+            await store.getAgentDeploymentRequests()
+        )
+        const request = requests.find((candidate) => candidate.id === requestId)
+        if (!request) {
+            return error(
+                ApiStatusCodes.NOT_FOUND,
+                'Deployment request not found'
+            )
+        }
 
-    if (
-        request.status === 'pending' &&
-        Date.parse(request.expiresAt) <= Date.now()
-    ) {
-        request.status = 'expired'
-        request.updatedAt = nowIso()
-        await store.setAgentDeploymentRequests(requests)
-    }
+        if (
+            request.status === 'pending' &&
+            Date.parse(request.expiresAt) <= Date.now()
+        ) {
+            request.status = 'expired'
+            request.updatedAt = nowIso()
+            await store.setAgentDeploymentRequests(requests)
+        }
 
-    return request
+        return request
+    })
 }
 
 export async function startAgentDeployment(
@@ -571,6 +693,12 @@ export async function startAgentDeployment(
     }
 
     return updateDeploymentRequest(store, requestId, (current) => {
+        if (current.status !== 'pending') {
+            return error(
+                ApiStatusCodes.ILLEGAL_OPERATION,
+                `Deployment request is already ${current.status}`
+            )
+        }
         current.status = 'running'
         current.startedAt = nowIso()
         current.approvedAt = current.approvedAt || nowIso()
@@ -642,36 +770,61 @@ export async function runAgentDeployment(
             serviceManager
         )
 
-        return updateDeploymentRequest(store, requestId, (current) => {
-            current.status = 'succeeded'
-            current.completedAt = nowIso()
+        const completed = await updateDeploymentRequest(
+            store,
+            requestId,
+            (current) => {
+                current.status = 'succeeded'
+                current.completedAt = nowIso()
+            }
+        )
+        void recordAuditEvent(store, {
+            action: 'agent.deployment.run',
+            outcome: 'success',
+            actor: `agent:${request.agentKeyId}`,
+            resource: request.id,
+            metadata: { appName: request.appName },
         })
+        return completed
     } catch (deploymentError) {
         Logger.e(
             deploymentError as Error,
             `Agent deployment failed: ${requestId}`
         )
-        const message = `${deploymentError || 'Deployment failed'}`.slice(
-            0,
-            2000
-        )
+        const message = redactText(
+            `${deploymentError || 'Deployment failed'}`
+        ).slice(0, 2000)
 
-        return updateDeploymentRequest(store, requestId, (current) => {
-            current.status = 'failed'
-            current.completedAt = nowIso()
-            current.error = message
+        const failed = await updateDeploymentRequest(
+            store,
+            requestId,
+            (current) => {
+                current.status = 'failed'
+                current.completedAt = nowIso()
+                current.error = message
+            }
+        )
+        void recordAuditEvent(store, {
+            action: 'agent.deployment.run',
+            outcome: 'failure',
+            actor: `agent:${request.agentKeyId}`,
+            resource: request.id,
+            metadata: { appName: request.appName },
         })
+        return failed
     }
 }
 
 export async function revokeAgentKey(store: AgentAccessStore, keyId: string) {
-    const keys = await store.getAgentKeys()
-    const record = keys.find((key) => key.id === keyId)
-    if (!record) {
-        return error(ApiStatusCodes.NOT_FOUND, 'Agent key not found')
-    }
+    return withStoreMutation(store, async () => {
+        const keys = await store.getAgentKeys()
+        const record = keys.find((key) => key.id === keyId)
+        if (!record) {
+            return error(ApiStatusCodes.NOT_FOUND, 'Agent key not found')
+        }
 
-    record.revokedAt = nowIso()
-    await store.setAgentKeys(keys)
-    return record
+        record.revokedAt = nowIso()
+        await store.setAgentKeys(keys)
+        return record
+    })
 }

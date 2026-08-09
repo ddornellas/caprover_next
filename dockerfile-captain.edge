@@ -35,8 +35,10 @@ COPY --from=builder /usr/src/app/config-override.json ./config-override.json
 # Install optional/native packages for the image's target architecture.
 RUN npm ci --omit=dev && npm cache clean --force
 
-# This quick hack invalidates the cache.
-ADD https://www.google.com /time.now
+# Explicit build metadata invalidates the cache without making an unrelated
+# external request during every image build.
+ARG CACHE_BUST=0
+RUN echo "$CACHE_BUST" > /tmp/caprover-build-cache-bust
 
 ENV NODE_ENV production
 ENV PORT 3000

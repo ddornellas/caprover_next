@@ -1,8 +1,9 @@
 import express = require('express')
-import axios from 'axios'
+import axios, { AxiosRequestConfig } from 'axios'
 import ApiStatusCodes from '../../../api/ApiStatusCodes'
 import BaseApi from '../../../api/BaseApi'
 import InjectionExtractor from '../../../injection/InjectionExtractor'
+import type { IOneClickTemplate } from '../../../models/IOneClickAppModels'
 import { EventLogger } from '../../../user/events/EventLogger'
 import {
     CapRoverEventFactory,
@@ -10,8 +11,14 @@ import {
 } from '../../../user/events/ICapRoverEvent'
 import OneClickAppDeployManager from '../../../user/oneclick/OneClickAppDeployManager'
 import { OneClickDeploymentJobRegistry } from '../../../user/oneclick/OneClickDeploymentJobRegistry'
+import { auditFromRequest } from '../../../user/AuditLogger'
 import CaptainConstants from '../../../utils/CaptainConstants'
 import Logger from '../../../utils/Logger'
+import {
+    assertSafeHttpUrl,
+    createPinnedHttpAgents,
+    resolveSafeHttpUrl,
+} from '../../../utils/SafeUrl'
 
 const router = express.Router()
 const DEFAULT_ONE_CLICK_BASE_URL = 'https://oneclickapps.caprover.com'
@@ -21,6 +28,89 @@ const VERSION = `v4`
 const HEADERS = {} as any
 HEADERS[CaptainConstants.headerCapRoverVersion] =
     CaptainConstants.configs.version
+
+const SAFE_HTTP_OPTIONS = {
+    timeout: 15_000,
+    maxRedirects: 0,
+    maxContentLength: 2 * 1024 * 1024,
+    maxBodyLength: 2 * 1024 * 1024,
+}
+
+async function safeAxiosRequest<T = unknown>(
+    config: AxiosRequestConfig & { url: string }
+) {
+    const resolution = await resolveSafeHttpUrl(config.url)
+    const agents = createPinnedHttpAgents(resolution)
+
+    try {
+        return await axios<T>({
+            ...config,
+            url: resolution.url,
+            httpAgent: agents.httpAgent,
+            httpsAgent: agents.httpsAgent,
+            maxRedirects: 0,
+        })
+    } finally {
+        agents.httpAgent.destroy()
+        agents.httpsAgent.destroy()
+    }
+}
+
+function validateOneClickDeploymentInput(
+    template: unknown,
+    values: unknown
+): asserts template is IOneClickTemplate {
+    if (!template || typeof template !== 'object' || Array.isArray(template)) {
+        throw ApiStatusCodes.createError(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'Template must be an object'
+        )
+    }
+
+    const templateObject = template as Record<string, any>
+    if (
+        !templateObject.caproverOneClickApp ||
+        !Array.isArray(templateObject.caproverOneClickApp.variables) ||
+        !templateObject.services ||
+        typeof templateObject.services !== 'object' ||
+        Array.isArray(templateObject.services)
+    ) {
+        throw ApiStatusCodes.createError(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'Template has an invalid one-click structure'
+        )
+    }
+
+    if (!Array.isArray(values) || values.length > 100) {
+        throw ApiStatusCodes.createError(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'values must be an array with at most 100 entries'
+        )
+    }
+
+    if (
+        values.some(
+            (value) =>
+                !value ||
+                typeof value !== 'object' ||
+                typeof value.key !== 'string' ||
+                typeof value.value !== 'string' ||
+                value.key.length > 200 ||
+                value.value.length > 10_000
+        )
+    ) {
+        throw ApiStatusCodes.createError(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'Each deployment value must contain bounded key and value strings'
+        )
+    }
+}
+
+function validateRepositoryUrl(url: string) {
+    // Keep the official repository convenient, but apply the same DNS/IP
+    // checks to it so a compromised DNS response cannot turn it into SSRF.
+    return assertSafeHttpUrl(url)
+}
 
 interface IOneClickAppIdentifier {
     baseUrl: string
@@ -57,6 +147,10 @@ router.post('/repositories/insert', function (req, res, next) {
 
     return Promise.resolve() //
         .then(function () {
+            return validateRepositoryUrl(apiBaseUrl)
+        })
+        .then(function (safeApiBaseUrl) {
+            apiBaseUrl = safeApiBaseUrl
             return dataStore.getAllOneClickBaseUrls()
         })
         .then(function (urls) {
@@ -66,8 +160,11 @@ router.post('/repositories/insert', function (req, res, next) {
                     `Repository URL already exists: ${apiBaseUrl}`
                 )
 
-            return axios
-                .get(apiBaseUrl + `/${VERSION}/list`)
+            return safeAxiosRequest<{ oneClickApps: any[] }>({
+                method: 'get',
+                url: apiBaseUrl + `/${VERSION}/list`,
+                ...SAFE_HTTP_OPTIONS,
+            })
                 .then(function (axiosResponse) {
                     return axiosResponse.data.oneClickApps as any[]
                 })
@@ -175,11 +272,15 @@ router.get('/template/list', function (req, res, next) {
             )
 
             urls.forEach((apiBaseUrl) => {
-                const p = axios({
-                    method: 'get',
-                    url: apiBaseUrl + `/${VERSION}/list`,
-                    headers: HEADERS,
-                })
+                const p = validateRepositoryUrl(apiBaseUrl)
+                    .then((safeApiBaseUrl) =>
+                        safeAxiosRequest<{ oneClickApps: any[] }>({
+                            method: 'get',
+                            url: safeApiBaseUrl + `/${VERSION}/list`,
+                            headers: HEADERS,
+                            ...SAFE_HTTP_OPTIONS,
+                        })
+                    )
                     .then(function (axiosResponse) {
                         return axiosResponse.data.oneClickApps as any[]
                     })
@@ -258,27 +359,30 @@ router.get('/template/app', function (req, res, next) {
                     'Unknown base URL '
                 )
 
-            const appUrl = `${baseDomain}/${VERSION}/apps/${appName}`
-            Logger.d(`retrieving app at: ${appUrl}`)
+            return validateRepositoryUrl(baseDomain).then((safeBaseDomain) => {
+                const appUrl = `${safeBaseDomain}/${VERSION}/apps/${encodeURIComponent(appName)}`
+                Logger.d(`retrieving app at: ${appUrl}`)
 
-            // Only log the official repo events
-            if (baseDomain === DEFAULT_ONE_CLICK_BASE_URL) {
-                eventLogger.trackEvent(
-                    CapRoverEventFactory.create(
-                        CapRoverEventType.OneClickAppDetailsFetched,
-                        {
-                            appName,
-                        }
+                // Only log the official repo events
+                if (baseDomain === DEFAULT_ONE_CLICK_BASE_URL) {
+                    eventLogger.trackEvent(
+                        CapRoverEventFactory.create(
+                            CapRoverEventType.OneClickAppDetailsFetched,
+                            {
+                                appName,
+                            }
+                        )
                     )
-                )
-            }
+                }
 
-            return axios({
-                method: 'get',
-                url: appUrl,
-                headers: HEADERS,
-            }).then(function (responseObject) {
-                return responseObject.data
+                return safeAxiosRequest({
+                    method: 'get',
+                    url: appUrl,
+                    headers: HEADERS,
+                    ...SAFE_HTTP_OPTIONS,
+                }).then(function (responseObject) {
+                    return responseObject.data
+                })
             })
         })
         .then(function (appTemplate) {
@@ -309,44 +413,52 @@ router.post('/deploy', function (req, res, next) {
 
     return Promise.resolve() //
         .then(function () {
-            if (!template) {
-                throw ApiStatusCodes.createError(
-                    ApiStatusCodes.ILLEGAL_PARAMETER,
-                    'Template is required'
+            validateOneClickDeploymentInput(template, values)
+
+            return deploymentJobRegistry.initialize(dataStore).then(() => {
+                const jobId = deploymentJobRegistry.createJob()
+
+                reportAnalyticsOnAppDeploy(templateName, template, eventLogger)
+
+                new OneClickAppDeployManager(
+                    dataStore,
+                    serviceManager,
+                    (deploymentState) => {
+                        deploymentJobRegistry.updateJobProgress(
+                            jobId,
+                            deploymentState
+                        )
+                        Logger.dev(
+                            `Deployment state updated for jobId: ${jobId} (step ${deploymentState.currentStep})`
+                        )
+                    }
+                ).startDeployProcess(template, values)
+
+                void auditFromRequest(
+                    dataStore,
+                    req,
+                    'oneclick.deploy',
+                    'success',
+                    'root-session',
+                    jobId,
+                    { templateName: `${templateName || 'unknown'}` }
                 )
-            }
 
-            const jobId = deploymentJobRegistry.createJob()
-
-            reportAnalyticsOnAppDeploy(templateName, template, eventLogger)
-
-            new OneClickAppDeployManager(
-                dataStore,
-                serviceManager,
-                (deploymentState) => {
-                    deploymentJobRegistry.updateJobProgress(
-                        jobId,
-                        deploymentState
-                    )
-                    Logger.dev(`Deployment state updated for jobId: ${jobId}`)
-                    Logger.dev(
-                        `Deployment state: ${JSON.stringify(deploymentState, null, 2)}`
-                    )
-                }
-            ).startDeployProcess(template, values)
-
-            const baseApi = new BaseApi(
-                ApiStatusCodes.STATUS_OK,
-                'One-click deployment started'
-            )
-            baseApi.data = { jobId }
-            res.send(baseApi)
+                const baseApi = new BaseApi(
+                    ApiStatusCodes.STATUS_OK,
+                    'One-click deployment started'
+                )
+                baseApi.data = { jobId }
+                res.send(baseApi)
+            })
         })
         .catch(ApiStatusCodes.createCatcher(res))
 })
 
 router.get('/deploy/progress', function (req, res, next) {
     const jobId = req.query.jobId as string
+    const dataStore =
+        InjectionExtractor.extractUserFromInjected(res).user.dataStore
     const deploymentJobRegistry = OneClickDeploymentJobRegistry.getInstance()
 
     return Promise.resolve() //
@@ -359,6 +471,16 @@ router.get('/deploy/progress', function (req, res, next) {
                 )
             }
 
+            if (!/^deploy_[0-9a-f-]{36}$/.test(jobId)) {
+                throw ApiStatusCodes.createError(
+                    ApiStatusCodes.ILLEGAL_PARAMETER,
+                    'Job ID is invalid'
+                )
+            }
+
+            return deploymentJobRegistry.initialize(dataStore)
+        })
+        .then(function () {
             // Check if job exists
             if (!deploymentJobRegistry.jobExists(jobId)) {
                 throw ApiStatusCodes.createError(
@@ -405,7 +527,10 @@ export function reportAnalyticsOnAppDeploy(
         templateName === 'DOCKER_COMPOSE'
     ) {
         if (template?.services) {
-            template.services.forEach((service: any) => {
+            const services = Array.isArray(template.services)
+                ? template.services
+                : Object.values(template.services)
+            services.forEach((service: any) => {
                 if (service && typeof service === 'object') {
                     Object.keys(service).forEach((key) => {
                         if (

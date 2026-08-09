@@ -30,3 +30,13 @@ test('Testing Encryptor - Key too short', () => {
     } catch (e) {}
     expect(value).toBe(1)
 })
+
+test('Encryptor uses an authenticated envelope and rejects tampering', () => {
+    const encryptor = new CaptainEncryptor(
+        '8h9hasfasaaaaaaaaaaaaaa75h7553245235423452345235235235254h75h38'
+    )
+    const encrypted = encryptor.encrypt('sensitive registry password')
+
+    expect(encrypted.startsWith('v2:')).toBe(true)
+    expect(() => encryptor.decrypt(`${encrypted}00`)).toThrow()
+})

@@ -15,7 +15,7 @@ import Logger from '../../utils/Logger'
 import CertbotManager from './CertbotManager'
 import fs = require('fs-extra')
 import { requestText } from '../../utils/httpRequest'
-const exec = util.promisify(chileProcess.exec)
+const execFile = util.promisify(chileProcess.execFile)
 
 const defaultPageTemplate = fs
     .readFileSync(__dirname + '/../../../template/default-page.ejs')
@@ -646,9 +646,12 @@ class LoadBalancerManager {
                 Logger.d(
                     'Creating dhparams for the first time - high CPU load is expected.'
                 )
-                return exec(
-                    `openssl dhparam -out ${DH_PARAMS_FILE_PATH_ON_HOST} 2048`
-                ).then(function () {
+                return execFile('openssl', [
+                    'dhparam',
+                    '-out',
+                    DH_PARAMS_FILE_PATH_ON_HOST,
+                    '2048',
+                ]).then(function () {
                     Logger.d('Updating Load Balancer - ensureDhParamFileExists')
                     return self.rePopulateNginxConfigFile()
                 })

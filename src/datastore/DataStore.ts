@@ -2,6 +2,7 @@
  * Created by kasra on 27/06/17.
  */
 import Configstore = require('configstore')
+import { createHash } from 'crypto'
 import fs = require('fs-extra')
 import { IAppDefSaved } from '../models/AppDefinition'
 import {
@@ -12,6 +13,8 @@ import CapRoverTheme from '../models/CapRoverTheme'
 import { GoAccessInfo } from '../models/GoAccessInfo'
 import { NetDataInfo } from '../models/NetDataInfo'
 import { AgentDeploymentRequest, AgentKeyRecord } from '../models/AgentAccess'
+import { AuditEventRecord } from '../models/AuditEvent'
+import { OneClickDeploymentJobRecord } from '../models/OneClickDeploymentJob'
 import CaptainConstants from '../utils/CaptainConstants'
 import CaptainEncryptor from '../utils/Encryptor'
 import Utils from '../utils/Utils'
@@ -39,8 +42,63 @@ const THEMES = 'themes'
 const CURRENT_THEME = 'currentTheme'
 const AGENT_KEYS = 'agentKeys'
 const AGENT_DEPLOYMENT_REQUESTS = 'agentDeploymentRequests'
+const AUDIT_EVENTS = 'auditEvents'
+const ONE_CLICK_DEPLOYMENT_JOBS = 'oneClickDeploymentJobs'
+const MAX_AGENT_DEPLOYMENT_REQUESTS = 500
+const MAX_AGENT_DEPLOYMENT_REQUEST_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
 const DEFAULT_CAPTAIN_ROOT_DOMAIN = 'captain.localhost'
+
+function pruneAgentDeploymentRequests(value: unknown) {
+    if (!Array.isArray(value)) return [] as AgentDeploymentRequest[]
+
+    const now = Date.now()
+    const retained = (value as AgentDeploymentRequest[]).filter((request) => {
+        if (!request || typeof request !== 'object') return false
+        const timestamp = Date.parse(request.updatedAt || request.createdAt)
+        return (
+            Number.isFinite(timestamp) &&
+            now - timestamp <= MAX_AGENT_DEPLOYMENT_REQUEST_AGE_MS
+        )
+    })
+
+    if (retained.length <= MAX_AGENT_DEPLOYMENT_REQUESTS) {
+        return retained
+    }
+
+    return retained
+        .sort(
+            (left, right) =>
+                Date.parse(left.updatedAt || left.createdAt) -
+                Date.parse(right.updatedAt || right.createdAt)
+        )
+        .slice(-MAX_AGENT_DEPLOYMENT_REQUESTS)
+}
+
+function migrateAgentDeploymentRequestSecrets(
+    requests: AgentDeploymentRequest[]
+) {
+    let changed = false
+    const migrated = requests.map((request) => {
+        if (
+            typeof request.idempotencyKey !== 'string' ||
+            request.idempotencyKeyHash
+        ) {
+            return request
+        }
+
+        changed = true
+        return {
+            ...request,
+            idempotencyKeyHash: createHash('sha256')
+                .update(request.idempotencyKey)
+                .digest('hex'),
+            idempotencyKey: undefined,
+        }
+    })
+
+    return { migrated, changed }
+}
 
 export function validateConfigFile(configPath: string) {
     if (!fs.pathExistsSync(configPath)) {
@@ -108,6 +166,7 @@ class DataStore {
     private registriesDataStore: RegistriesDataStore
     proDataStore: ProDataStore
     private projectsDataStore: ProjectsDataStore
+    private auditWriteQueue: Promise<void> = Promise.resolve()
 
     constructor(namespace: string) {
         const configPath = `${CaptainConstants.captainDataDirectory}/config-${namespace}.json`
@@ -420,8 +479,9 @@ class DataStore {
     }
 
     getAgentKeys(): Promise<AgentKeyRecord[]> {
+        const value = this.data.get(AGENT_KEYS)
         return Promise.resolve(
-            (this.data.get(AGENT_KEYS) || []) as AgentKeyRecord[]
+            (Array.isArray(value) ? value : []) as AgentKeyRecord[]
         )
     }
 
@@ -432,15 +492,61 @@ class DataStore {
     }
 
     getAgentDeploymentRequests(): Promise<AgentDeploymentRequest[]> {
-        return Promise.resolve(
-            (this.data.get(AGENT_DEPLOYMENT_REQUESTS) ||
-                []) as AgentDeploymentRequest[]
-        )
+        const value = this.data.get(AGENT_DEPLOYMENT_REQUESTS)
+        const pruned = pruneAgentDeploymentRequests(value)
+        const { migrated, changed } =
+            migrateAgentDeploymentRequestSecrets(pruned)
+        if (
+            Array.isArray(value) &&
+            (migrated.length !== value.length || changed)
+        ) {
+            this.data.set(AGENT_DEPLOYMENT_REQUESTS, migrated)
+        }
+        return Promise.resolve(migrated)
     }
 
     setAgentDeploymentRequests(requests: AgentDeploymentRequest[]) {
         return Promise.resolve().then(() => {
-            this.data.set(AGENT_DEPLOYMENT_REQUESTS, requests)
+            const { migrated } = migrateAgentDeploymentRequestSecrets(
+                pruneAgentDeploymentRequests(requests)
+            )
+            this.data.set(AGENT_DEPLOYMENT_REQUESTS, migrated)
+        })
+    }
+
+    getAuditEvents(): Promise<AuditEventRecord[]> {
+        const value = this.data.get(AUDIT_EVENTS)
+        return Promise.resolve(
+            (Array.isArray(value) ? value : []) as AuditEventRecord[]
+        )
+    }
+
+    appendAuditEvent(event: AuditEventRecord) {
+        const write = this.auditWriteQueue.then(async () => {
+            const events = await this.getAuditEvents()
+            const next = [...events, event]
+            // Keep the local control-plane store bounded. Detailed logs should
+            // be exported to an external sink when longer retention is needed.
+            this.data.set(AUDIT_EVENTS, next.slice(-500))
+        })
+
+        // Keep the queue alive after an individual write fails. The caller
+        // still receives the original rejection and can report it, while a
+        // transient filesystem error does not permanently disable auditing.
+        this.auditWriteQueue = write.catch(() => undefined)
+        return write
+    }
+
+    getOneClickDeploymentJobs(): Promise<OneClickDeploymentJobRecord[]> {
+        const value = this.data.get(ONE_CLICK_DEPLOYMENT_JOBS)
+        return Promise.resolve(
+            (Array.isArray(value) ? value : []) as OneClickDeploymentJobRecord[]
+        )
+    }
+
+    setOneClickDeploymentJobs(jobs: OneClickDeploymentJobRecord[]) {
+        return Promise.resolve().then(() => {
+            this.data.set(ONE_CLICK_DEPLOYMENT_JOBS, jobs.slice(-200))
         })
     }
 

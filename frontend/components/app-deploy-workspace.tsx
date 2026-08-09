@@ -70,6 +70,10 @@ function formatBuildLogs(status: BuildStatus | undefined) {
         .join('\n')
 }
 
+function usableSecret(value: string | undefined) {
+    return value && value !== '[REDACTED]' ? value : ''
+}
+
 export function AppDeployWorkspace({ app }: AppDeployWorkspaceProps) {
     const appName = app.appName || ''
     const [source, setSource] = useState<DeploySource>('image')
@@ -86,9 +90,19 @@ export function AppDeployWorkspace({ app }: AppDeployWorkspaceProps) {
     const [working, setWorking] = useState(false)
     const [notice, setNotice] = useState<string>()
     const [error, setError] = useState<string>()
+    const [appTokenEnabled, setAppTokenEnabled] = useState(
+        !!app.appDeployTokenConfig?.enabled
+    )
+    const [revealedAppToken, setRevealedAppToken] = useState<string>()
+    const [revealedWebhookToken, setRevealedWebhookToken] = useState<string>()
 
     const buildLogs = useMemo(() => formatBuildLogs(status), [status])
-    const webhookToken = app.appPushWebhook?.pushWebhookToken || ''
+    const webhookToken =
+        revealedWebhookToken ||
+        usableSecret(app.appPushWebhook?.pushWebhookToken)
+    const appDeployToken =
+        revealedAppToken ||
+        usableSecret(app.appDeployTokenConfig?.appDeployToken)
     const webhookUrl = webhookToken
         ? `${typeof window === 'undefined' ? '' : window.location.origin}/api/v2/user/apps/webhooks/triggerbuild?namespace=captain&token=${encodeURIComponent(webhookToken)}`
         : ''
@@ -219,7 +233,7 @@ export function AppDeployWorkspace({ app }: AppDeployWorkspaceProps) {
                 }),
             })
             setNotice(
-                'Repository saved. Reload the page to receive the webhook URL.'
+                'Repository saved. Reveal or rotate the webhook token to use the build URL.'
             )
             window.setTimeout(() => window.location.reload(), 700)
         } catch (operationError) {
@@ -257,16 +271,71 @@ export function AppDeployWorkspace({ app }: AppDeployWorkspaceProps) {
                 body: JSON.stringify({
                     appName,
                     appDeployTokenConfig: {
-                        enabled: !app.appDeployTokenConfig?.enabled,
-                        appDeployToken:
-                            app.appDeployTokenConfig?.appDeployToken || '',
+                        enabled: !appTokenEnabled,
+                        appDeployToken: appDeployToken || '',
                     },
                 }),
             })
+            setAppTokenEnabled(!appTokenEnabled)
             setNotice('App token setting saved.')
             window.setTimeout(() => window.location.reload(), 700)
         } catch (operationError) {
             setError(getErrorMessage(operationError))
+            setWorking(false)
+        }
+    }
+
+    async function rotateToken(kind: 'deploy' | 'webhook') {
+        startOperation()
+        try {
+            const response = await clientApiRequest<{ token: string }>(
+                `/user/apps/appDefinitions/rotate-${kind}-token/`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({ appName }),
+                }
+            )
+            if (kind === 'deploy') {
+                setRevealedAppToken(response.data.token)
+                setAppTokenEnabled(true)
+            } else {
+                setRevealedWebhookToken(response.data.token)
+            }
+            setNotice(
+                `${kind === 'deploy' ? 'App' : 'Webhook'} token rotated. Copy it to your secret manager now.`
+            )
+        } catch (operationError) {
+            setError(getErrorMessage(operationError))
+        } finally {
+            setWorking(false)
+        }
+    }
+
+    async function revealToken(kind: 'deploy' | 'webhook') {
+        startOperation()
+        try {
+            const response = await clientApiRequest<{
+                appDeployToken?: string
+                webhookToken?: string
+            }>(
+                `/user/apps/appDefinitions/secrets/?appName=${encodeURIComponent(appName)}`
+            )
+            const token =
+                kind === 'deploy'
+                    ? response.data.appDeployToken
+                    : response.data.webhookToken
+            if (!token) {
+                setError('No token is configured for this app.')
+                return
+            }
+            if (kind === 'deploy') setRevealedAppToken(token)
+            else setRevealedWebhookToken(token)
+            setNotice(
+                `${kind === 'deploy' ? 'App' : 'Webhook'} token revealed. Copy it only to your trusted secret manager.`
+            )
+        } catch (operationError) {
+            setError(getErrorMessage(operationError))
+        } finally {
             setWorking(false)
         }
     }
@@ -423,9 +492,7 @@ export function AppDeployWorkspace({ app }: AppDeployWorkspaceProps) {
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
                             <Badge>
-                                {app.appDeployTokenConfig?.enabled
-                                    ? 'Enabled'
-                                    : 'Disabled'}
+                                {appTokenEnabled ? 'Enabled' : 'Disabled'}
                             </Badge>
                             <Button
                                 variant="outline"
@@ -434,23 +501,44 @@ export function AppDeployWorkspace({ app }: AppDeployWorkspaceProps) {
                                 disabled={working}
                                 onClick={() => void toggleAppToken()}
                             >
-                                {app.appDeployTokenConfig?.enabled
+                                {appTokenEnabled
                                     ? 'Disable token'
                                     : 'Enable token'}
                             </Button>
-                        </div>
-                        {app.appDeployTokenConfig?.enabled &&
-                            app.appDeployTokenConfig.appDeployToken && (
-                                <Input
-                                    readOnly
-                                    value={
-                                        app.appDeployTokenConfig.appDeployToken
-                                    }
-                                    onFocus={(event) =>
-                                        event.currentTarget.select()
-                                    }
-                                />
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                type="button"
+                                disabled={working}
+                                onClick={() => void rotateToken('deploy')}
+                            >
+                                Rotate token
+                            </Button>
+                            {appTokenEnabled && !appDeployToken && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    type="button"
+                                    disabled={working}
+                                    onClick={() => void revealToken('deploy')}
+                                >
+                                    Reveal token
+                                </Button>
                             )}
+                        </div>
+                        {appTokenEnabled && appDeployToken && (
+                            <Input
+                                readOnly
+                                value={appDeployToken}
+                                onFocus={(event) =>
+                                    event.currentTarget.select()
+                                }
+                            />
+                        )}
+                        <p className="text-xs text-muted-foreground">
+                            Rotating immediately revokes the previous token.
+                            Store the new value in your CI secret manager.
+                        </p>
                     </CardContent>
                 </Card>
 
@@ -518,6 +606,26 @@ export function AppDeployWorkspace({ app }: AppDeployWorkspaceProps) {
                                     >
                                         <Clipboard className="h-4 w-4" />
                                         Copy webhook
+                                    </Button>
+                                )}
+                                <Button
+                                    variant="outline"
+                                    type="button"
+                                    disabled={working || !app.appPushWebhook}
+                                    onClick={() => void rotateToken('webhook')}
+                                >
+                                    Rotate webhook token
+                                </Button>
+                                {app.appPushWebhook && !webhookToken && (
+                                    <Button
+                                        variant="outline"
+                                        type="button"
+                                        disabled={working}
+                                        onClick={() =>
+                                            void revealToken('webhook')
+                                        }
+                                    >
+                                        Reveal webhook token
                                     </Button>
                                 )}
                                 <Button

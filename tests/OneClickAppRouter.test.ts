@@ -283,6 +283,23 @@ describe('reportAnalyticsOnAppDeploy', () => {
             expect(unusedFields).toEqual([])
         })
 
+        test('should handle services represented as a compose object', () => {
+            const templateName = 'DOCKER_COMPOSE'
+            const template = {
+                services: {
+                    web: { image: 'nginx:latest', restart: 'always' },
+                    db: { image: 'postgres:latest', networks: ['backend'] },
+                },
+            }
+
+            reportAnalyticsOnAppDeploy(templateName, template, mockEventLogger)
+
+            expect(trackedEvents[0].eventMetadata.unusedFields).toEqual([
+                'restart',
+                'networks',
+            ])
+        })
+
         test('should handle template without services property', () => {
             const templateName = 'TEMPLATE_ONE_CLICK'
             const template = { other_property: 'value' }

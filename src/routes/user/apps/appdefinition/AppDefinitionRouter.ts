@@ -11,7 +11,10 @@ import InjectionExtractor from '../../../../injection/InjectionExtractor'
 import { AppDeployTokenConfig } from '../../../../models/AppDefinition'
 import { IHashMapGeneric } from '../../../../models/ICacheGeneric'
 import CaptainManager from '../../../../user/system/CaptainManager'
+import { auditFromRequest } from '../../../../user/AuditLogger'
+import Authenticator from '../../../../user/Authenticator'
 import Logger from '../../../../utils/Logger'
+import { restoreRedactedSecrets } from '../../../../utils/Redact'
 import Utils from '../../../../utils/Utils'
 
 const router = express.Router()
@@ -79,7 +82,10 @@ router.get('/', function (req, res, next) {
     const serviceManager =
         InjectionExtractor.extractUserFromInjected(res).user.serviceManager
 
-    return getAllAppDefinitions(dataStore, serviceManager)
+    return getAllAppDefinitions(dataStore, serviceManager, {
+        redactSecrets:
+            `${req.query.redactSecrets || ''}`.toLowerCase() === 'true',
+    })
         .then(function (result) {
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
@@ -89,6 +95,128 @@ router.get('/', function (req, res, next) {
             res.send(baseApi)
         })
         .catch(ApiStatusCodes.createCatcher(res))
+})
+
+// Secrets are intentionally excluded from the modern app-definition list.
+// They are returned only after an explicit, audited reveal action.
+router.get('/secrets/', function (req, res, next) {
+    const user = InjectionExtractor.extractUserFromInjected(res).user
+    const appName = `${req.query.appName || ''}`.trim()
+
+    return user.dataStore
+        .getAppsDataStore()
+        .getAppDefinition(appName)
+        .then((app) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'app.secrets.reveal',
+                'success',
+                'root-session',
+                appName
+            )
+            res.setHeader('Cache-Control', 'no-store')
+            const baseApi = new BaseApi(
+                ApiStatusCodes.STATUS_OK,
+                'App secrets retrieved for this explicit request.'
+            )
+            baseApi.data = {
+                appName,
+                appDeployToken: app.appDeployTokenConfig?.enabled
+                    ? app.appDeployTokenConfig.appDeployToken
+                    : undefined,
+                webhookToken: app.appPushWebhook?.pushWebhookToken,
+            }
+            res.send(baseApi)
+        })
+        .catch((error) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'app.secrets.reveal',
+                'failure',
+                'root-session',
+                appName
+            )
+            ApiStatusCodes.createCatcher(res)(error)
+        })
+})
+
+router.post('/rotate-deploy-token/', function (req, res, next) {
+    const user = InjectionExtractor.extractUserFromInjected(res).user
+    const appName = `${req.body?.appName || ''}`.trim()
+
+    return user.dataStore
+        .getAppsDataStore()
+        .rotateAppDeployToken(appName)
+        .then((token) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'app.deploy_token.rotate',
+                'success',
+                'root-session',
+                appName
+            )
+            res.setHeader('Cache-Control', 'no-store')
+            const baseApi = new BaseApi(
+                ApiStatusCodes.STATUS_OK,
+                'App deploy token rotated. Store the returned token now.'
+            )
+            baseApi.data = { appName, token }
+            res.send(baseApi)
+        })
+        .catch((error) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'app.deploy_token.rotate',
+                'failure',
+                'root-session',
+                appName
+            )
+            ApiStatusCodes.createCatcher(res)(error)
+        })
+})
+
+router.post('/rotate-webhook-token/', function (req, res, next) {
+    const user = InjectionExtractor.extractUserFromInjected(res).user
+    const appName = `${req.body?.appName || ''}`.trim()
+
+    return user.dataStore
+        .getAppsDataStore()
+        .rotateAppPushWebhookToken(
+            appName,
+            Authenticator.getAuthenticator(user.namespace)
+        )
+        .then((token) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'app.webhook_token.rotate',
+                'success',
+                'root-session',
+                appName
+            )
+            res.setHeader('Cache-Control', 'no-store')
+            const baseApi = new BaseApi(
+                ApiStatusCodes.STATUS_OK,
+                'Webhook token rotated. Update the provider now.'
+            )
+            baseApi.data = { appName, token }
+            res.send(baseApi)
+        })
+        .catch((error) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'app.webhook_token.rotate',
+                'failure',
+                'root-session',
+                appName
+            )
+            ApiStatusCodes.createCatcher(res)(error)
+        })
 })
 
 router.post('/enablebasedomainssl/', function (req, res, next) {
@@ -189,6 +317,14 @@ router.post('/register/', function (req, res, next) {
         serviceManager
     )
         .then(function (result) {
+            void auditFromRequest(
+                dataStore,
+                req,
+                'app.create',
+                'success',
+                'root-session',
+                appName
+            )
             res.send(new BaseApi(ApiStatusCodes.STATUS_OK, result.message))
         })
         .catch(ApiStatusCodes.createCatcher(res))
@@ -252,6 +388,15 @@ router.post('/delete/', function (req, res, next) {
             return serviceManager.removeVolsSafe(volumesToDelete)
         })
         .then(function (failedVolsToRemoved) {
+            void auditFromRequest(
+                dataStore,
+                req,
+                'app.delete',
+                failedVolsToRemoved.length ? 'failure' : 'success',
+                'root-session',
+                appsToDelete.join(','),
+                { skippedVolumeCount: failedVolsToRemoved.length }
+            )
             Logger.d(`Successfully deleted: ${appsToDelete.join(', ')}`)
 
             if (failedVolsToRemoved.length) {
@@ -287,6 +432,14 @@ router.post('/rename/', function (req, res, next) {
         })
         .then(function () {
             Logger.d('AppName is renamed')
+            void auditFromRequest(
+                InjectionExtractor.extractUserFromInjected(res).user.dataStore,
+                req,
+                'app.rename',
+                'success',
+                'root-session',
+                `${oldAppName}->${newAppName}`
+            )
             res.send(
                 new BaseApi(ApiStatusCodes.STATUS_OK, 'AppName is renamed')
             )
@@ -296,6 +449,8 @@ router.post('/rename/', function (req, res, next) {
 
 // Update app configs
 router.post('/update/', function (req, res, next) {
+    const dataStore =
+        InjectionExtractor.extractUserFromInjected(res).user.dataStore
     const serviceManager =
         InjectionExtractor.extractUserFromInjected(res).user.serviceManager
 
@@ -325,33 +480,52 @@ router.post('/update/', function (req, res, next) {
         AppDeployTokenConfig | undefined
     const description = req.body.description
 
-    return updateAppDefinition(
-        {
-            appName,
-            projectId,
-            description,
-            instanceCount,
-            captainDefinitionRelativeFilePath,
-            envVars,
-            volumes,
-            tags,
-            nodeId,
-            notExposeAsWebApp,
-            containerHttpPort,
-            httpAuth,
-            forceSsl,
-            ports,
-            repoInfo,
-            customNginxConfig,
-            redirectDomain,
-            preDeployFunction,
-            serviceUpdateOverride,
-            websocketSupport,
-            appDeployTokenConfig,
-        },
-        serviceManager
-    )
+    return Promise.resolve()
+        .then(() => dataStore.getAppsDataStore().getAppDefinition(appName))
+        .then((existingApp) =>
+            updateAppDefinition(
+                {
+                    appName,
+                    projectId,
+                    description,
+                    instanceCount,
+                    captainDefinitionRelativeFilePath,
+                    envVars,
+                    volumes,
+                    tags,
+                    nodeId,
+                    notExposeAsWebApp,
+                    containerHttpPort,
+                    httpAuth,
+                    forceSsl,
+                    ports,
+                    repoInfo: repoInfo
+                        ? restoreRedactedSecrets(
+                              existingApp?.appPushWebhook?.repoInfo,
+                              repoInfo
+                          )
+                        : existingApp?.appPushWebhook?.repoInfo,
+                    customNginxConfig,
+                    redirectDomain,
+                    preDeployFunction,
+                    serviceUpdateOverride,
+                    websocketSupport,
+                    appDeployTokenConfig,
+                },
+                serviceManager,
+                existingApp?.appPushWebhook?.repoInfo,
+                existingApp?.appDeployTokenConfig
+            )
+        )
         .then(function (result) {
+            void auditFromRequest(
+                InjectionExtractor.extractUserFromInjected(res).user.dataStore,
+                req,
+                'app.update',
+                'success',
+                'root-session',
+                appName
+            )
             res.send(new BaseApi(ApiStatusCodes.STATUS_OK, result.message))
         })
         .catch(ApiStatusCodes.createCatcher(res))
@@ -375,6 +549,14 @@ router.patch('/update/', function (req, res, next) {
 
     return patchAppDefinition(appName, req.body, dataStore, serviceManager)
         .then(function (result) {
+            void auditFromRequest(
+                dataStore,
+                req,
+                'app.update',
+                'success',
+                'root-session',
+                appName
+            )
             res.send(new BaseApi(ApiStatusCodes.STATUS_OK, result.message))
         })
         .catch(ApiStatusCodes.createCatcher(res))

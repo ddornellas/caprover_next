@@ -95,7 +95,7 @@ export function LoginForm() {
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
                         className="border-slate-300 bg-white text-slate-950 caret-slate-950 placeholder:text-slate-400 focus-visible:border-sky-500 focus-visible:ring-sky-500/30 pl-10"
-                        maxLength={29}
+                        maxLength={256}
                         autoComplete="current-password"
                         autoFocus
                         required

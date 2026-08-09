@@ -91,7 +91,7 @@ export default class OneClickAppDeployManager {
         } catch (error) {
             this.onDeploymentStateChanged({
                 steps: ['Parsing the template'],
-                error: `Cannot parse: ${stringified}\n\n\n\n${error}`,
+                error: 'Cannot parse the deployment template.',
                 currentStep: 0,
             })
             return
@@ -181,7 +181,11 @@ export default class OneClickAppDeployManager {
                 self.onDeploymentStateChanged(
                     Utils.copyObject({
                         steps: stepsTexts,
-                        error: `Failed: ${error}`,
+                        error: `Deployment failed: ${
+                            error instanceof Error
+                                ? error.message
+                                : 'operation returned an error'
+                        }`,
                         currentStep,
                     })
                 )

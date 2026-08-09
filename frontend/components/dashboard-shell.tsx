@@ -34,6 +34,7 @@ const navigation = [
     { href: '/cluster', label: 'Cluster', icon: CircleGauge },
     { href: '/maintenance', label: 'Maintenance', icon: SlidersHorizontal },
     { href: '/settings', label: 'Settings', icon: Settings },
+    { href: '/security', label: 'Security Center', icon: ShieldCheck },
 ]
 
 interface DashboardShellProps {

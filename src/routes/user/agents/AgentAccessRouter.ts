@@ -14,6 +14,7 @@ import {
     toAgentKeyMetadata,
 } from '../../../user/agents/AgentAccessManager'
 import Logger from '../../../utils/Logger'
+import { auditFromRequest } from '../../../user/AuditLogger'
 
 const router = express.Router()
 
@@ -42,6 +43,18 @@ router.post('/keys/', function (req, res, next) {
 
     return createAgentKey(user.dataStore, input)
         .then(function (created) {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'agent.key.create',
+                'success',
+                'root-session',
+                created.metadata.id,
+                {
+                    role: created.metadata.role,
+                    appCount: created.metadata.appNames.length,
+                }
+            )
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'Agent key created. Store the returned apiKey now; it will not be shown again.'
@@ -56,6 +69,14 @@ router.post('/keys/:keyId/revoke/', function (req, res, next) {
     const user = getUser(res)
     return revokeAgentKey(user.dataStore, req.params.keyId)
         .then(function (record) {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'agent.key.revoke',
+                'success',
+                'root-session',
+                req.params.keyId
+            )
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'Agent key revoked'
@@ -103,6 +124,15 @@ router.post('/deployments/:requestId/approve/', function (req, res, next) {
             startAgentDeployment(user.dataStore, req.params.requestId, actor)
         )
         .then((request) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'agent.deployment.approve',
+                'success',
+                'root-session',
+                request.id,
+                { appName: request.appName }
+            )
             void runAgentDeployment(
                 user.dataStore,
                 user.serviceManager,
@@ -141,6 +171,15 @@ router.post('/deployments/:requestId/reject/', function (req, res, next) {
             )
         )
         .then((request) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'agent.deployment.reject',
+                'success',
+                'root-session',
+                request.id,
+                { appName: request.appName }
+            )
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'Deployment rejected'

@@ -207,4 +207,68 @@ describe('agent access', () => {
             })
         ).rejects.toThrow('approval request already exists')
     })
+
+    test('returns the same deployment request for a repeated idempotency key', async () => {
+        const store = new MemoryAgentStore()
+        const created = await createAgentKey(store, {
+            name: 'idempotent deploy bot',
+            role: 'deploy_approval',
+            appNames: ['api'],
+        })
+        const key = await authenticateAgentApiKey(store, created.apiKey)
+        const input = {
+            appName: 'api',
+            captainDefinition: {
+                schemaVersion: 2,
+                imageName: 'nginx:alpine',
+            },
+        }
+
+        const first = await createAgentDeploymentRequest(
+            store,
+            key!,
+            input,
+            'release-123'
+        )
+        const second = await createAgentDeploymentRequest(
+            store,
+            key!,
+            input,
+            'release-123'
+        )
+
+        expect(second.id).toBe(first.id)
+        expect((await store.getAgentDeploymentRequests()).length).toBe(1)
+        expect(
+            (await store.getAgentDeploymentRequests())[0].idempotencyKey
+        ).toBeUndefined()
+        expect(
+            (await store.getAgentDeploymentRequests())[0].idempotencyKeyHash
+        ).toMatch(/^[a-f0-9]{64}$/)
+    })
+
+    test('serializes concurrent idempotent requests for the same key', async () => {
+        const store = new MemoryAgentStore()
+        const created = await createAgentKey(store, {
+            name: 'concurrent deploy bot',
+            role: 'deploy_approval',
+            appNames: ['api'],
+        })
+        const key = await authenticateAgentApiKey(store, created.apiKey)
+        const input = {
+            appName: 'api',
+            captainDefinition: {
+                schemaVersion: 2,
+                imageName: 'nginx:alpine',
+            },
+        }
+
+        const [first, second] = await Promise.all([
+            createAgentDeploymentRequest(store, key!, input, 'release-456'),
+            createAgentDeploymentRequest(store, key!, input, 'release-456'),
+        ])
+
+        expect(second.id).toBe(first.id)
+        expect((await store.getAgentDeploymentRequests()).length).toBe(1)
+    })
 })

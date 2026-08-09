@@ -855,6 +855,10 @@ class CaptainManager {
         return !!this.hasForceSsl
     }
 
+    getRootDomain() {
+        return this.dataStore.getRootDomain()
+    }
+
     getNginxConfig() {
         const self = this
         return Promise.resolve().then(function () {

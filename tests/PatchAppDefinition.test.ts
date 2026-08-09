@@ -8,7 +8,10 @@
  * accidentally wipe env vars, volumes, ports, or other app configuration.
  */
 
-import { patchAppDefinition } from '../src/handlers/users/apps/appdefinition/AppDefinitionHandler'
+import {
+    patchAppDefinition,
+    updateAppDefinition,
+} from '../src/handlers/users/apps/appdefinition/AppDefinitionHandler'
 import { IAppDef } from '../src/models/AppDefinition'
 
 const mockExistingApp: IAppDef = {
@@ -209,6 +212,46 @@ describe('patchAppDefinition', () => {
         const args = capturedUpdateArgs
         // httpAuth is arg 11
         expect(args[11]).toEqual(mockExistingApp.httpAuth)
+    })
+
+    it('should preserve app deploy token when a redacted marker is submitted', async () => {
+        await patchAppDefinition(
+            'my-app',
+            {
+                appName: 'my-app',
+                appDeployTokenConfig: {
+                    enabled: true,
+                    appDeployToken: '[REDACTED]',
+                },
+            },
+            mockDataStore,
+            mockServiceManager
+        )
+
+        expect(capturedUpdateArgs[20]).toEqual({
+            enabled: true,
+            appDeployToken: 'tok-123',
+        })
+    })
+
+    it('should preserve server-owned secrets when a full update omits them', async () => {
+        await updateAppDefinition(
+            {
+                appName: 'my-app',
+                description: 'Updated without secret fields',
+                instanceCount: 2,
+            },
+            mockServiceManager,
+            mockExistingApp.appPushWebhook?.repoInfo,
+            mockExistingApp.appDeployTokenConfig
+        )
+
+        expect(capturedUpdateArgs[14]).toEqual(
+            mockExistingApp.appPushWebhook?.repoInfo
+        )
+        expect(capturedUpdateArgs[20]).toEqual(
+            mockExistingApp.appDeployTokenConfig
+        )
     })
 
     it('should merge HTTP auth edits without dropping the stored password', async () => {

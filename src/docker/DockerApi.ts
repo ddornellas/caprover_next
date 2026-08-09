@@ -30,6 +30,10 @@ import dockerodeUtils = require('dockerode/lib/util')
 const Base64 = Base64Provider.Base64
 const CAPROVER_MANAGED_SERVICE_LABEL = 'com.caprover.managed'
 
+function shellQuote(value: string) {
+    return `'${`${value}`.replace(/'/g, "'\\''")}'`
+}
+
 function safeParseChunk(chunk: string): {
     stream?: string
     error?: any
@@ -257,7 +261,9 @@ class DockerApi {
         token: string,
         workerIp: string
     ) {
-        return `docker swarm join --token ${token} ${captainIpAddress}:2377 --advertise-addr ${workerIp}:2377`
+        return `docker swarm join --token ${shellQuote(token)} ${shellQuote(
+            `${captainIpAddress}:2377`
+        )} --advertise-addr ${shellQuote(`${workerIp}:2377`)}`
     }
 
     getNodesInfo() {

@@ -55,9 +55,27 @@ export default class DiskCleanupManager {
 
         const dockerApi = this.dockerApi
 
-        return Promise.resolve().then(function () {
-            return dockerApi.deleteImages(imageIds)
-        })
+        return Promise.resolve()
+            .then(() => this.getUnusedImages(0))
+            .then((unusedImages) => {
+                const requestedImageIds = Array.isArray(imageIds)
+                    ? imageIds
+                    : []
+                const allowedIds = new Set(
+                    unusedImages.map((image) => image.id)
+                )
+                const safeImageIds = requestedImageIds
+                    .filter((imageId) => typeof imageId === 'string')
+                    .filter((imageId) => allowedIds.has(imageId))
+
+                if (safeImageIds.length !== requestedImageIds.length) {
+                    Logger.w(
+                        'Skipped image deletion for resources that are not unused CapRover images.'
+                    )
+                }
+
+                return dockerApi.deleteImages(safeImageIds)
+            })
     }
 
     getUnusedImages(mostRecentLimit: number) {
@@ -80,11 +98,30 @@ export default class DiskCleanupManager {
             })
             .then(function (apps) {
                 const unusedImages = []
+                const ownedImageTags = new Set<string>()
 
-                if (mostRecentLimit < 0) {
+                // A name that merely resembles a CapRover image is not proof
+                // of ownership. Only images recorded in persisted CapRover
+                // app versions and produced by the generated image naming
+                // convention are eligible for deletion. Unknown/legacy
+                // resources remain untouched until ownership is explicit.
+                Object.values(apps).forEach((app) => {
+                    ;(app.versions || []).forEach((version) => {
+                        const imageName = version.deployedImageName || ''
+                        if (/(^|\/)img-captain-[^/:]+:\d+$/.test(imageName)) {
+                            ownedImageTags.add(imageName)
+                        }
+                    })
+                })
+
+                if (
+                    !Number.isInteger(mostRecentLimit) ||
+                    mostRecentLimit < 0 ||
+                    mostRecentLimit > 1000
+                ) {
                     throw ApiStatusCodes.createError(
                         ApiStatusCodes.ILLEGAL_PARAMETER,
-                        'Most Recent Limit cannot be negative'
+                        'Most Recent Limit must be an integer between 0 and 1000'
                     )
                 }
 
@@ -103,7 +140,7 @@ export default class DiskCleanupManager {
                             if (versionToCheck < 0) continue
 
                             let deployedImage = ''
-                            app.versions.forEach((v) => {
+                            ;(app.versions || []).forEach((v) => {
                                 if (v.version === versionToCheck) {
                                     deployedImage = v.deployedImageName || ''
                                 }
@@ -117,7 +154,11 @@ export default class DiskCleanupManager {
                         }
                     })
 
-                    if (!imageInUse) {
+                    const isCapRoverImage = repoTags.some((tag) =>
+                        ownedImageTags.has(tag)
+                    )
+
+                    if (!imageInUse && isCapRoverImage) {
                         unusedImages.push({
                             id: currentImage.Id,
                             tags: repoTags,

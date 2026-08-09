@@ -394,6 +394,37 @@ class AppsDataStore {
         })
     }
 
+    rotateAppDeployToken(appName: string) {
+        return this.getAppDefinition(appName).then((app) => {
+            const token = Utils.generateRandomString(48)
+            app.appDeployTokenConfig = {
+                enabled: true,
+                appDeployToken: token,
+            }
+            return this.saveApp(appName, app).then(() => token)
+        })
+    }
+
+    rotateAppPushWebhookToken(appName: string, authenticator: Authenticator) {
+        return this.getAppDefinition(appName).then((app) => {
+            if (!app.appPushWebhook?.repoInfo) {
+                throw ApiStatusCodes.createError(
+                    ApiStatusCodes.ILLEGAL_OPERATION,
+                    'Configure a repository before rotating its webhook token'
+                )
+            }
+
+            const tokenVersion = uuid()
+            return authenticator
+                .getAppPushWebhookToken(appName, tokenVersion)
+                .then((token) => {
+                    app.appPushWebhook!.tokenVersion = tokenVersion
+                    app.appPushWebhook!.pushWebhookToken = token
+                    return this.saveApp(appName, app).then(() => token)
+                })
+        })
+    }
+
     setSslForDefaultSubDomain(appName: string, isEnabled: boolean) {
         const self = this
 

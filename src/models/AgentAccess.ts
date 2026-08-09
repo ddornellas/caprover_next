@@ -37,6 +37,10 @@ export interface AgentDeploymentRequest {
     description?: string
     captainDefinition: ICaptainDefinition
     gitHash?: string
+    /** SHA-256 of the caller supplied idempotency key; never expose the raw key. */
+    idempotencyKeyHash?: string
+    /** Legacy persisted field retained only for migration of older stores. */
+    idempotencyKey?: string
     status: AgentDeploymentStatus
     createdAt: string
     expiresAt: string

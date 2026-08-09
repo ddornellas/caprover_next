@@ -86,4 +86,46 @@ describe('isSameOriginRequest', () => {
 
         expect(isSameOriginRequest(request as any)).toBe(true)
     })
+
+    test('rejects opaque and cross-site browser requests', () => {
+        const request = {
+            secure: true,
+            get: jest.fn((header: string) => {
+                const headers: Record<string, string> = {
+                    Origin: 'null',
+                    'Sec-Fetch-Site': 'same-origin',
+                }
+                return headers[header]
+            }),
+        }
+
+        expect(isSameOriginRequest(request as any)).toBe(false)
+
+        request.get = jest.fn((header: string) => {
+            const headers: Record<string, string> = {
+                Origin: 'https://captain.example',
+                'Sec-Fetch-Site': 'cross-site',
+            }
+            return headers[header]
+        })
+        expect(isSameOriginRequest(request as any)).toBe(false)
+    })
+
+    test('does not trust forwarded origin headers from a direct peer', () => {
+        const request = {
+            secure: true,
+            socket: { remoteAddress: '198.51.100.10' },
+            get: jest.fn((header: string) => {
+                const headers: Record<string, string> = {
+                    Origin: 'https://captain.example',
+                    Host: 'evil.example',
+                    'X-Forwarded-Host': 'captain.example',
+                    'X-Forwarded-Proto': 'https',
+                }
+                return headers[header]
+            }),
+        }
+
+        expect(isSameOriginRequest(request as any)).toBe(false)
+    })
 })

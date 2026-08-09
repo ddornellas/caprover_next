@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server'
+import { isIP } from 'node:net'
 
 import { createProxyRequestInit } from '@/lib/proxy-request'
 
@@ -33,16 +34,26 @@ async function proxy(request: NextRequest, context: RouteContext) {
     headers.delete('content-encoding')
     headers.delete('connection')
     headers.delete('accept-encoding')
-    if (!headers.has('x-forwarded-host')) {
-        const host = request.headers.get('host')
-        if (host) headers.set('x-forwarded-host', host)
+    // Never trust forwarded headers supplied by a browser. They influence
+    // cookie security, redirect targets and CSRF origin checks in Express.
+    headers.delete('x-forwarded-host')
+    headers.delete('x-forwarded-proto')
+    headers.delete('x-forwarded-for')
+    headers.delete('x-real-ip')
+    // The supported nginx entrypoint overwrites X-Real-IP/X-Forwarded-For
+    // before this request reaches Next. Forward only a validated address and
+    // never the browser's arbitrary forwarding chain to Express.
+    const edgeClientIp =
+        request.headers.get('x-real-ip') ||
+        request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    if (edgeClientIp && isIP(edgeClientIp)) {
+        headers.set('x-real-ip', edgeClientIp)
     }
-    if (!headers.has('x-forwarded-proto')) {
-        const originProtocol = request.headers.get('origin')?.split(':', 1)[0]
-        const forwardedProtocol =
-            originProtocol || new URL(request.url).protocol.replace(':', '')
-        headers.set('x-forwarded-proto', forwardedProtocol)
-    }
+    headers.set('x-forwarded-host', incomingUrl.host)
+    headers.set(
+        'x-forwarded-proto',
+        new URL(request.url).protocol.replace(':', '')
+    )
 
     try {
         const response = await fetch(

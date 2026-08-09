@@ -15,10 +15,13 @@ import {
 } from '../../user/agents/AgentAccessManager'
 import CaptainConstants from '../../utils/CaptainConstants'
 import Logger from '../../utils/Logger'
+import { auditFromRequest } from '../../user/AuditLogger'
+import { getRequestClientKey, RateLimiter } from '../../utils/RateLimiter'
 import { AgentKeyRecord } from '../../models/AgentAccess'
 import type { AppStatus } from '../../models/AppDefinition'
 
 const router = express.Router()
+const agentRateLimiter = new RateLimiter(120, 60_000)
 
 function getAgentKey(res: express.Response) {
     return res.locals.agentKey as AgentKeyRecord
@@ -45,6 +48,17 @@ function getAppStatus(app: { status?: AppStatus; instanceCount?: number }) {
 }
 
 router.use(function (req, res, next) {
+    const rateLimit = agentRateLimiter.consume(getRequestClientKey(req))
+    if (!rateLimit.allowed) {
+        res.setHeader('Retry-After', `${rateLimit.retryAfterSeconds}`)
+        res.status(429).send(
+            new BaseApi(
+                ApiStatusCodes.STATUS_PASSWORD_BACK_OFF,
+                'Too many agent requests. Please retry later.'
+            )
+        )
+        return
+    }
     const userManager = getUserManager()
     const apiKey = extractAgentApiKey(req.header('authorization'))
 
@@ -254,10 +268,20 @@ router.post('/deployments', function (req, res, next) {
             return createAgentDeploymentRequest(
                 userManager.datastore,
                 key,
-                req.body
+                req.body,
+                req.get('Idempotency-Key')
             )
         })
         .then(async function (request) {
+            void auditFromRequest(
+                userManager.datastore,
+                req,
+                'agent.deployment.request',
+                'success',
+                `agent:${key.id}`,
+                request.id,
+                { appName: request.appName, role: key.role }
+            )
             if (key.role === 'deploy') {
                 await startAgentDeployment(
                     userManager.datastore,

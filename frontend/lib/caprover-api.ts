@@ -11,6 +11,7 @@ import {
 } from './api-client'
 import type {
     ApiResponse,
+    AuditEvent,
     AppsPayload,
     AppsWorkspaceData,
     ProjectsPayload,
@@ -148,6 +149,31 @@ export async function getSystemInfo(): Promise<SystemInfoResult> {
     }
 }
 
+export async function getSecurityCenterData(): Promise<{
+    state: AuthState
+    data?: { systemInfo: SystemInfo; auditEvents: AuditEvent[] }
+}> {
+    const systemInfo = await getSystemInfo()
+    if (systemInfo.state.kind !== 'authenticated' || !systemInfo.data) {
+        return { state: systemInfo.state }
+    }
+
+    try {
+        const response = await serverApiRequest<{ events: AuditEvent[] }>(
+            '/user/system/audit/?limit=40'
+        )
+        return {
+            state: systemInfo.state,
+            data: {
+                systemInfo: systemInfo.data,
+                auditEvents: response.data.events || [],
+            },
+        }
+    } catch (error) {
+        return { state: getErrorState(error) }
+    }
+}
+
 export async function requireSystemInfo() {
     const result = await getSystemInfo()
 
@@ -174,7 +200,9 @@ export async function getAppsWorkspace(): Promise<{
 
     try {
         const [appsResponse, projectsResponse] = await Promise.all([
-            serverApiRequest<AppsPayload>('/user/apps/appDefinitions/'),
+            serverApiRequest<AppsPayload>(
+                '/user/apps/appDefinitions/?redactSecrets=true'
+            ),
             serverApiRequest<ProjectsPayload>('/user/projects/'),
         ])
 

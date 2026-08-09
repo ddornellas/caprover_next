@@ -1,4 +1,5 @@
 import bcrypt = require('bcryptjs')
+import Authenticator from '../src/user/Authenticator'
 
 test('Testing Authenticator 1', () => {
     const passwordStored =
@@ -18,4 +19,30 @@ test('Testing Authenticator 1', () => {
             hashed
         )
     ).toBe(true)
+})
+
+test('new password hashes preserve characters beyond bcrypt input limits', async () => {
+    const authenticator = new Authenticator('test-salt-', 'captain')
+    const oldPassword = 'old-password'
+    const savedHash = bcrypt.hashSync(
+        'test-salt-captain' + oldPassword,
+        bcrypt.genSaltSync(4)
+    )
+    const longPassword = 'a'.repeat(100) + '-unique-suffix'
+
+    const updatedHash = await authenticator.changepass(
+        oldPassword,
+        longPassword,
+        savedHash
+    )
+
+    await expect(
+        authenticator.isPasswordCorrect(longPassword, updatedHash)
+    ).resolves.toBe(true)
+    await expect(
+        authenticator.isPasswordCorrect(
+            'a'.repeat(100) + '-different-suffix',
+            updatedHash
+        )
+    ).resolves.toBe(false)
 })

@@ -1,5 +1,6 @@
 import SshClientImport = require('ssh2')
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
+import { randomUUID } from 'crypto'
 import * as fs from 'fs-extra'
 import moment from 'moment'
 import * as path from 'path'
@@ -13,6 +14,7 @@ import { IHashMapGeneric } from '../../models/ICacheGeneric'
 import { ServerDockerInfo } from '../../models/ServerDockerInfo'
 import CaptainConstants from '../../utils/CaptainConstants'
 import Logger from '../../utils/Logger'
+import { safeTarExtractOptions } from '../../utils/SafeTar'
 import Utils from '../../utils/Utils'
 import Authenticator from '../Authenticator'
 import CertbotManager from './CertbotManager'
@@ -376,6 +378,23 @@ export default class BackupManager {
                     throw new Error(`${n.newIp} is repeated!!`)
                 }
 
+                if (!/^[a-z_][a-z0-9_-]{0,31}$/i.test(n.user || '')) {
+                    throw new Error('Restoration SSH user is invalid')
+                }
+
+                const expectedPrivateKeyPath = path.resolve(
+                    CaptainConstants.captainBaseDirectory,
+                    'id_rsa'
+                )
+                if (
+                    path.resolve(n.privateKeyPath || '') !==
+                    expectedPrivateKeyPath
+                ) {
+                    throw new Error(
+                        'Restoration private key path must point to the CapRover restore key'
+                    )
+                }
+
                 newIps.push(n.newIp)
 
                 connectingFuncs.push(function () {
@@ -599,15 +618,48 @@ export default class BackupManager {
         if (!fs.statSync(CaptainConstants.restoreTarFilePath).isFile())
             throw new Error('restore tar file is not a file!!')
 
+        const stagingDirectory = `${CaptainConstants.restoreDirectoryPath}.staging-${randomUUID()}`
+
         return Promise.resolve() //
             .then(function () {
-                return fs.ensureDir(CaptainConstants.restoreDirectoryPath)
+                return fs.ensureDir(stagingDirectory)
             })
             .then(function () {
                 return tar
                     .extract({
                         file: CaptainConstants.restoreTarFilePath,
-                        cwd: CaptainConstants.restoreDirectoryPath,
+                        cwd: stagingDirectory,
+                        ...safeTarExtractOptions(),
+                    })
+                    .then(function () {
+                        return Promise.all([
+                            fs.pathExists(
+                                `${stagingDirectory}/meta/${BACKUP_JSON}`
+                            ),
+                            fs.pathExists(
+                                `${stagingDirectory}/data/config-captain.json`
+                            ),
+                        ])
+                    })
+                    .then(function ([hasMeta, hasConfig]) {
+                        if (!hasMeta || !hasConfig) {
+                            throw new Error(
+                                'Backup archive is missing its required metadata or configuration files'
+                            )
+                        }
+
+                        // Do not expose partially extracted content to the
+                        // restoration phases. The old restore directory is
+                        // replaced only after the complete archive passes the
+                        // tar and structure checks.
+                        return fs
+                            .remove(CaptainConstants.restoreDirectoryPath)
+                            .then(() =>
+                                fs.move(
+                                    stagingDirectory,
+                                    CaptainConstants.restoreDirectoryPath
+                                )
+                            )
                     })
                     .then(function () {
                         return fs.remove(CaptainConstants.restoreTarFilePath)
@@ -615,6 +667,11 @@ export default class BackupManager {
                     .then(function () {
                         return Promise.resolve(true)
                     })
+            })
+            .catch(function (error) {
+                return fs.remove(stagingDirectory).then(function () {
+                    throw error
+                })
             })
     }
 
@@ -670,11 +727,42 @@ export default class BackupManager {
                         // We cannot use fs.copy as it doesn't properly copy the broken SymLink which might exist in LetsEncrypt
                         // https://github.com/jprichardson/node-fs-extra/issues/638
                         return new Promise(function (resolve, reject) {
-                            const child = exec(
-                                `mkdir -p ${dest} && cp -rp  ${CaptainConstants.captainDataDirectory} ${dest} && mkdir -p ${dest}/shared-logs && rm -rf ${dest}/shared-logs`
-                            )
-                            child.addListener('error', reject)
-                            child.addListener('exit', resolve)
+                            const run = (command: string, args: string[]) =>
+                                new Promise<void>(
+                                    (resolveCommand, rejectCommand) => {
+                                        const child = execFile(
+                                            command,
+                                            args,
+                                            (error) => {
+                                                if (error) rejectCommand(error)
+                                                else resolveCommand()
+                                            }
+                                        )
+                                        child.on('error', rejectCommand)
+                                    }
+                                )
+
+                            run('mkdir', ['-p', dest])
+                                .then(() =>
+                                    run('cp', [
+                                        '-rp',
+                                        CaptainConstants.captainDataDirectory,
+                                        dest,
+                                    ])
+                                )
+                                .then(() =>
+                                    run('mkdir', [
+                                        '-p',
+                                        path.join(dest, 'shared-logs'),
+                                    ])
+                                )
+                                .then(() =>
+                                    run('rm', [
+                                        '-rf',
+                                        path.join(dest, 'shared-logs'),
+                                    ])
+                                )
+                                .then(resolve, reject)
                         })
                     })
                     .then(function () {
@@ -724,7 +812,10 @@ export default class BackupManager {
 
                         nodeInfo.forEach((n) => {
                             if (n.isLeader) {
-                                mainIP = (n.ip || '').split('.').join('_')
+                                mainIP =
+                                    BackupManager.sanitizeHostnameForFilename(
+                                        n.ip
+                                    )
                                 hostname =
                                     BackupManager.sanitizeHostnameForFilename(
                                         n.hostname
@@ -745,6 +836,7 @@ export default class BackupManager {
                             'YYYY_MM_DD-HH_mm_ss'
                         )}-${now.valueOf()}`}${`-ip-${mainIP}${hostSegment}.tar`}`
                         fs.moveSync(tarFilePath, newName)
+                        fs.chmodSync(newName, 0o600)
 
                         setTimeout(
                             () => {
