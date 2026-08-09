@@ -1,0 +1,1013 @@
+#!/usr/bin/env bash
+
+# CapRover Next host installer and operator CLI.
+#
+# The installer intentionally delegates Swarm initialization to the existing
+# CaptainInstaller inside the release image. This script owns the VM lifecycle:
+# host preflight, Docker installation, immutable image selection, idempotency,
+# health checks, backups, and safe upgrades.
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly SCRIPT_NAME="caprover-next-install"
+readonly SCRIPT_VERSION="1"
+readonly SERVICE_NAME="captain-captain"
+readonly BOOTSTRAP_CONTAINER="caprover-next-bootstrap"
+readonly DEFAULT_DATA_DIR="/captain"
+readonly DEFAULT_STATE_DIR="/etc/caprover-next"
+readonly DEFAULT_STABLE_IMAGE="ddornellas/caprover-next"
+readonly DEFAULT_EDGE_IMAGE="ddornellas/caprover-next-edge"
+readonly DEFAULT_STABLE_VERSION="1.15.0"
+readonly DEFAULT_EDGE_VERSION="latest"
+
+operation="install"
+channel="stable"
+version="${CAPROVER_NEXT_VERSION:-$DEFAULT_STABLE_VERSION}"
+image_name="${CAPROVER_NEXT_IMAGE:-$DEFAULT_STABLE_IMAGE}"
+image_digest="${CAPROVER_NEXT_IMAGE_DIGEST:-}"
+data_dir="${CAPROVER_NEXT_DATA_DIR:-$DEFAULT_DATA_DIR}"
+state_dir="${CAPROVER_NEXT_STATE_DIR:-$DEFAULT_STATE_DIR}"
+domain="${CAPROVER_NEXT_DOMAIN:-}"
+node_ip="${CAPROVER_NEXT_NODE_IP:-}"
+admin_cidr="${CAPROVER_NEXT_ADMIN_CIDR:-}"
+http_port="${CAPROVER_NEXT_HTTP_PORT:-80}"
+https_port="${CAPROVER_NEXT_HTTPS_PORT:-443}"
+admin_port="${CAPROVER_NEXT_ADMIN_PORT:-3000}"
+ssh_port="${CAPROVER_NEXT_SSH_PORT:-22}"
+accepted_terms="false"
+skip_docker="false"
+configure_firewall="false"
+dry_run="false"
+non_interactive="false"
+force="false"
+remove_data="false"
+require_signature="false"
+allow_public_admin="false"
+cosign_key="${CAPROVER_NEXT_COSIGN_KEY:-}"
+bootstrap_started="false"
+password_file=""
+os_id=""
+os_codename=""
+resolved_reference=""
+
+usage() {
+    cat <<'EOF'
+CapRover Next VM installer and operator CLI
+
+Usage:
+  sudo caprover-next-install [install] [options]
+  sudo caprover-next-install <status|doctor|upgrade|rollback|backup|uninstall> [options]
+
+Operations:
+  install       Install CapRover Next on a clean VM (default)
+  status        Show Docker, Swarm, service, image, and health status
+  doctor        Run read-only compatibility and connectivity checks
+  upgrade       Pull the selected image and update captain-captain safely
+  rollback      Roll the control-plane service back to its previous image
+  backup        Create a timestamped archive of /captain/data
+  uninstall     Remove only verified CapRover control-plane services; keep data
+
+Options:
+  --version VERSION       Image tag (default: stable release)
+  --channel stable|edge   Select stable or edge image channel
+  --image IMAGE           Image repository without a tag
+  --image-digest DIGEST   Pin image to sha256:<64 hex characters>
+  --domain DOMAIN         Remember the root domain in the install manifest
+  --node-ip ADDRESS       Swarm advertise address passed to the bootstrap
+  --data-dir PATH         Persistent directory (default: /captain)
+  --state-dir PATH        Installer state directory (default: /etc/caprover-next)
+  --http-port PORT        Host HTTP port (default: 80)
+  --https-port PORT       Host HTTPS port (default: 443)
+  --admin-port PORT       Host dashboard port (default: 3000)
+  --ssh-port PORT         SSH port to preserve when configuring UFW (default: 22)
+  --admin-cidr CIDR       Restrict the dashboard rule when configuring UFW
+  --allow-public-admin    Explicitly expose the dashboard port to the internet
+  --accept-terms          Confirm the CapRover Next terms for this installation
+  --skip-docker           Do not install Docker; require a working daemon
+  --configure-firewall    Apply a minimal UFW policy after a successful install
+  --require-signature     Verify the image with cosign before starting it
+  --cosign-key PATH       Public key used by --require-signature
+  --non-interactive       Never prompt; fail instead of asking for confirmation
+  --force                 Allow an existing installation to be operated on
+  --remove-data           With uninstall, also remove the persistent data
+  --dry-run               Print planned actions without mutating the host
+  -h, --help              Show this help
+
+Environment overrides are available with the CAPROVER_NEXT_* prefix. The
+installer never removes /captain unless --remove-data is explicitly supplied.
+EOF
+}
+
+log() {
+    printf '[%s] %s\n' "$SCRIPT_NAME" "$*"
+}
+
+warn() {
+    printf '[%s] WARNING: %s\n' "$SCRIPT_NAME" "$*" >&2
+}
+
+die() {
+    printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2
+    exit 1
+}
+
+require_value() {
+    local option="$1"
+    [[ $# -ge 2 && -n "${2:-}" ]] || die "$option requires a value"
+}
+
+run() {
+    if [[ "$dry_run" == "true" ]]; then
+        printf '+ '
+        printf '%q ' "$@"
+        printf '\n'
+        return 0
+    fi
+    "$@"
+}
+
+is_root_required() {
+    case "$operation" in
+        install|upgrade|rollback|backup|uninstall) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+require_privileges() {
+    if ! is_root_required; then
+        return 0
+    fi
+    if [[ "$dry_run" == "true" ]]; then
+        warn "dry-run is running without root; privileged actions are only printed"
+        return 0
+    fi
+    [[ "$(id -u)" -eq 0 ]] || die "run this operation as root (for example: sudo $SCRIPT_NAME)"
+}
+
+validate_port() {
+    local name="$1"
+    local value="$2"
+    [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a numeric TCP port"
+    (( value >= 1 && value <= 65535 )) || die "$name must be between 1 and 65535"
+}
+
+validate_path() {
+    local name="$1"
+    local value="$2"
+    [[ -n "$value" && "$value" != *[[:space:]]* ]] || die "$name is invalid"
+    [[ "$value" == /* ]] || die "$name must be an absolute path"
+    [[ "$value" != "/" ]] || die "$name cannot be the filesystem root"
+}
+
+validate_image_name() {
+    [[ "$image_name" =~ ^[A-Za-z0-9._:/-]+$ ]] || die "invalid image repository: $image_name"
+    [[ "$image_name" != */ && "$image_name" != *..* ]] || die "invalid image repository: $image_name"
+}
+
+validate_digest() {
+    if [[ -n "$image_digest" ]]; then
+        [[ "$image_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || die "--image-digest must be sha256:<64 hex characters>"
+    fi
+}
+
+validate_domain() {
+    if [[ -n "$domain" ]]; then
+        [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "invalid domain: $domain"
+    fi
+}
+
+validate_cidr() {
+    if [[ -n "$admin_cidr" ]]; then
+        [[ "$admin_cidr" =~ ^[0-9A-Fa-f:.]+/[0-9]{1,3}$ ]] || die "invalid --admin-cidr: $admin_cidr"
+    fi
+}
+
+validate_options() {
+    validate_path '--data-dir' "$data_dir"
+    validate_path '--state-dir' "$state_dir"
+    validate_port '--http-port' "$http_port"
+    validate_port '--https-port' "$https_port"
+    validate_port '--admin-port' "$admin_port"
+    validate_port '--ssh-port' "$ssh_port"
+    validate_image_name
+    validate_digest
+    validate_domain
+    validate_cidr
+    [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid version or channel tag: $version"
+    if [[ -n "$node_ip" ]]; then
+        [[ "$node_ip" =~ ^[A-Za-z0-9:.%_-]+$ ]] || die "invalid --node-ip: $node_ip"
+    fi
+    if [[ "$http_port" == "$https_port" || "$http_port" == "$admin_port" || "$https_port" == "$admin_port" ]]; then
+        die "HTTP, HTTPS, and admin ports must be distinct"
+    fi
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            install|status|doctor|upgrade|rollback|backup|uninstall)
+                operation="$1"
+                shift
+                ;;
+            --operation)
+                require_value "$1" "${2:-}"
+                operation="$2"
+                shift 2
+                ;;
+            --channel)
+                require_value "$1" "${2:-}"
+                channel="$2"
+                shift 2
+                ;;
+            --version)
+                require_value "$1" "${2:-}"
+                version="$2"
+                shift 2
+                ;;
+            --image)
+                require_value "$1" "${2:-}"
+                image_name="$2"
+                shift 2
+                ;;
+            --image-digest)
+                require_value "$1" "${2:-}"
+                image_digest="$2"
+                shift 2
+                ;;
+            --domain)
+                require_value "$1" "${2:-}"
+                domain="$2"
+                shift 2
+                ;;
+            --node-ip)
+                require_value "$1" "${2:-}"
+                node_ip="$2"
+                shift 2
+                ;;
+            --data-dir)
+                require_value "$1" "${2:-}"
+                data_dir="$2"
+                shift 2
+                ;;
+            --state-dir)
+                require_value "$1" "${2:-}"
+                state_dir="$2"
+                shift 2
+                ;;
+            --http-port)
+                require_value "$1" "${2:-}"
+                http_port="$2"
+                shift 2
+                ;;
+            --https-port)
+                require_value "$1" "${2:-}"
+                https_port="$2"
+                shift 2
+                ;;
+            --admin-port)
+                require_value "$1" "${2:-}"
+                admin_port="$2"
+                shift 2
+                ;;
+            --ssh-port)
+                require_value "$1" "${2:-}"
+                ssh_port="$2"
+                shift 2
+                ;;
+            --admin-cidr)
+                require_value "$1" "${2:-}"
+                admin_cidr="$2"
+                shift 2
+                ;;
+            --allow-public-admin)
+                allow_public_admin="true"
+                shift
+                ;;
+            --accept-terms)
+                accepted_terms="true"
+                shift
+                ;;
+            --skip-docker)
+                skip_docker="true"
+                shift
+                ;;
+            --configure-firewall)
+                configure_firewall="true"
+                shift
+                ;;
+            --require-signature)
+                require_signature="true"
+                shift
+                ;;
+            --cosign-key)
+                require_value "$1" "${2:-}"
+                cosign_key="$2"
+                shift 2
+                ;;
+            --non-interactive)
+                non_interactive="true"
+                shift
+                ;;
+            --force)
+                force="true"
+                shift
+                ;;
+            --remove-data)
+                remove_data="true"
+                shift
+                ;;
+            --dry-run)
+                dry_run="true"
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown option or operation: $1 (use --help)"
+                ;;
+        esac
+    done
+
+    case "$channel" in
+        stable)
+            if [[ "$version" == "$DEFAULT_STABLE_VERSION" && -z "${CAPROVER_NEXT_VERSION:-}" ]]; then
+                version="$DEFAULT_STABLE_VERSION"
+            fi
+            ;;
+        edge)
+            if [[ "$image_name" == "$DEFAULT_STABLE_IMAGE" && -z "${CAPROVER_NEXT_IMAGE:-}" ]]; then
+                image_name="$DEFAULT_EDGE_IMAGE"
+            fi
+            if [[ "$version" == "$DEFAULT_STABLE_VERSION" && -z "${CAPROVER_NEXT_VERSION:-}" ]]; then
+                version="$DEFAULT_EDGE_VERSION"
+            fi
+            ;;
+        *)
+            die '--channel must be stable or edge'
+            ;;
+    esac
+
+    validate_options
+}
+
+image_reference() {
+    if [[ -n "$resolved_reference" ]]; then
+        printf '%s' "$resolved_reference"
+        return 0
+    fi
+    if [[ -n "$image_digest" ]]; then
+        printf '%s@%s' "$image_name" "$image_digest"
+    else
+        printf '%s:%s' "$image_name" "$version"
+    fi
+}
+
+manifest_path() {
+    printf '%s/install-manifest.env' "$state_dir"
+}
+
+password_path() {
+    printf '%s/initial-admin-password' "$state_dir"
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+read_os_release() {
+    [[ -r /etc/os-release ]] || die '/etc/os-release is missing; only Linux VMs are supported'
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "${ID:-}" in
+        ubuntu|debian) ;;
+        *) die "unsupported operating system: ${PRETTY_NAME:-${ID:-unknown}} (Ubuntu 22+ or Debian 12+ required)" ;;
+    esac
+    local major="${VERSION_ID%%.*}"
+    if [[ "$ID" == "ubuntu" && "$major" -lt 22 ]]; then
+        die "Ubuntu 22 or newer is required (found ${VERSION_ID:-unknown})"
+    fi
+    if [[ "$ID" == "debian" && "$major" -lt 12 ]]; then
+        die "Debian 12 or newer is required (found ${VERSION_ID:-unknown})"
+    fi
+    os_id="$ID"
+    os_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+}
+
+check_architecture() {
+    case "$(uname -m)" in
+        x86_64|amd64|aarch64|arm64) ;;
+        *) die "unsupported architecture: $(uname -m) (amd64 and arm64 are supported)" ;;
+    esac
+}
+
+check_pve() {
+    if uname -r | grep -qi -- '-pve'; then
+        die 'Proxmox LXC kernels (-pve) are not supported; use a VM instead'
+    fi
+}
+
+check_resources() {
+    local mem_kb free_kb
+    mem_kb="$(awk '/MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || printf '0')"
+    if [[ "$mem_kb" =~ ^[0-9]+$ ]] && (( mem_kb < 900000 )); then
+        if [[ "$force" == "true" ]]; then
+            warn "less than 1 GB RAM detected; continuing because --force was supplied"
+        else
+            die 'at least 1 GB RAM is required; use --force only for a test VM'
+        fi
+    fi
+    if [[ -d "$data_dir" ]]; then
+        free_kb="$(df -Pk "$data_dir" | awk 'NR==2 {print $4}')"
+        if [[ "$free_kb" =~ ^[0-9]+$ ]] && (( free_kb < 10485760 )); then
+            warn "less than 10 GB free on the CapRover filesystem"
+        fi
+    fi
+}
+
+port_in_use() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .
+        return $?
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+check_ports() {
+    local port
+    for port in "$http_port" "$https_port" "$admin_port"; do
+        if port_in_use "$port"; then
+            if command -v docker >/dev/null 2>&1 && docker service inspect "$SERVICE_NAME" >/dev/null 2>&1; then
+                warn "port $port is already in use by the existing CapRover service"
+            else
+                die "port $port is already in use; stop the conflicting service before installing"
+            fi
+        fi
+    done
+}
+
+read_docker_state() {
+    command -v docker >/dev/null 2>&1 || return 1
+    docker info >/dev/null 2>&1
+}
+
+install_docker() {
+    if read_docker_state; then
+        log 'Docker daemon is already available'
+        return 0
+    fi
+    if [[ "$skip_docker" == "true" ]]; then
+        die '--skip-docker was supplied but Docker is not available or not running'
+    fi
+    [[ "$dry_run" == "true" || "$(id -u)" -eq 0 ]] || die 'Docker installation requires root'
+    read_os_release
+    require_command apt-get
+    require_command dpkg
+    if [[ "$dry_run" == "true" ]]; then
+        log "would install Docker Engine from https://download.docker.com/linux/$os_id"
+        run systemctl enable --now docker
+        return 0
+    fi
+
+    log "Installing Docker Engine from the official $os_id repository"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y ca-certificates curl
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://download.docker.com/linux/$os_id/gpg" -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    [[ -n "$os_codename" ]] || die 'could not determine the OS codename for the Docker repository'
+    cat >/etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/$os_id
+Suites: $os_codename
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    systemctl enable --now docker
+    docker info >/dev/null
+    docker run --rm hello-world >/dev/null
+}
+
+check_docker_compatibility() {
+    require_command docker
+    docker info >/dev/null 2>&1 || die 'Docker daemon is not reachable; check systemctl status docker'
+    local api_version docker_version
+    api_version="$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)"
+    docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+    [[ -n "$api_version" ]] || die 'could not read the Docker server API version'
+    log "Docker $docker_version (API $api_version) is available"
+    if ! docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -Eq 'active|pending|locked'; then
+        log 'Docker Swarm is not initialized yet; the CapRover bootstrap will initialize it'
+    fi
+}
+
+preflight() {
+    log 'Running VM preflight checks'
+    read_os_release
+    check_architecture
+    check_pve
+    check_resources
+    if [[ "$operation" == "install" ]]; then
+        check_ports
+    fi
+    if [[ "$dry_run" != "true" ]]; then
+        check_docker_compatibility
+    else
+        log 'dry-run: Docker and port checks will be executed on the target VM'
+    fi
+}
+
+confirm_terms() {
+    [[ "$operation" == "install" ]] || return 0
+    if [[ "$accepted_terms" == "true" ]]; then
+        return 0
+    fi
+    if [[ "$dry_run" == "true" || "$non_interactive" == "true" ]]; then
+        die 'installation requires --accept-terms when --dry-run or --non-interactive is used'
+    fi
+    printf 'By continuing you accept the CapRover Next terms at TERMS_AND_CONDITIONS.md. Continue? [y/N] '
+    local answer
+    read -r answer
+    [[ "$answer" == "y" || "$answer" == "Y" ]] || die 'installation cancelled because terms were not accepted'
+    accepted_terms="true"
+}
+
+ensure_directories() {
+    run install -d -m 0755 "$data_dir"
+    run install -d -m 0700 "$state_dir"
+    run install -d -m 0700 "$data_dir/installer"
+}
+
+generate_password() {
+    local output
+    if [[ -f "$(password_path)" ]]; then
+        password_file="$(password_path)"
+        return 0
+    fi
+    if [[ "$dry_run" == "true" ]]; then
+        password_file="$(password_path)"
+        log "would generate a random initial admin password in $password_file"
+        return 0
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        output="$(openssl rand -base64 36 | tr -dc 'A-Za-z0-9' | cut -c1-32)"
+    else
+        output="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n' | cut -c1-32)"
+    fi
+    [[ "${#output}" -ge 24 ]] || die 'could not generate a sufficiently strong admin password'
+    printf '%s\n' "$output" >"$(password_path)"
+    chmod 0600 "$(password_path)"
+    password_file="$(password_path)"
+}
+
+write_manifest() {
+    local path
+    path="$(manifest_path)"
+    if [[ "$dry_run" == "true" ]]; then
+        log "would write install manifest to $path"
+        return 0
+    fi
+    umask 077
+    cat >"$path" <<EOF
+CAPROVER_NEXT_INSTALLER_VERSION=$SCRIPT_VERSION
+CAPROVER_NEXT_CHANNEL=$channel
+CAPROVER_NEXT_VERSION=$version
+CAPROVER_NEXT_IMAGE=$image_name
+CAPROVER_NEXT_IMAGE_DIGEST=$image_digest
+CAPROVER_NEXT_RESOLVED_IMAGE=$resolved_reference
+CAPROVER_NEXT_DATA_DIR=$data_dir
+CAPROVER_NEXT_DOMAIN=$domain
+CAPROVER_NEXT_NODE_IP=$node_ip
+CAPROVER_NEXT_HTTP_PORT=$http_port
+CAPROVER_NEXT_HTTPS_PORT=$https_port
+CAPROVER_NEXT_ADMIN_PORT=$admin_port
+CAPROVER_NEXT_SSH_PORT=$ssh_port
+CAPROVER_NEXT_INSTALLED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+    chmod 0600 "$path"
+}
+
+verify_image_digest() {
+    [[ -n "$image_digest" ]] || return 0
+    local actual inspect_reference
+    inspect_reference="$image_name:$version"
+    if [[ -n "$image_digest" ]]; then
+        inspect_reference="$image_name@$image_digest"
+    fi
+    actual="$(docker image inspect --format '{{index .RepoDigests 0}}' "$inspect_reference" 2>/dev/null || true)"
+    [[ "$actual" == *"@$image_digest" ]] || die "pulled image digest mismatch: expected $image_digest, got ${actual:-unknown}"
+    log "Image digest verified: $image_digest"
+}
+
+resolve_pulled_image() {
+    local inspect_reference actual digest
+    inspect_reference="$image_name:$version"
+    if [[ -n "$image_digest" ]]; then
+        inspect_reference="$image_name@$image_digest"
+    fi
+    actual="$(docker image inspect --format '{{index .RepoDigests 0}}' "$inspect_reference" 2>/dev/null || true)"
+    [[ "$actual" == *@sha256:* ]] || die "Docker did not expose a content digest for $inspect_reference"
+    digest="${actual##*@}"
+    if [[ -n "$image_digest" && "$digest" != "$image_digest" ]]; then
+        die "pulled image digest mismatch: expected $image_digest, got $digest"
+    fi
+    resolved_reference="${actual%%@*}@$digest"
+    log "Resolved image: $resolved_reference"
+}
+
+verify_image_signature() {
+    [[ "$require_signature" == "true" ]] || return 0
+    command -v cosign >/dev/null 2>&1 || die '--require-signature needs cosign installed on the VM'
+    [[ -n "$cosign_key" ]] || die '--require-signature requires --cosign-key PATH or CAPROVER_NEXT_COSIGN_KEY'
+    [[ -r "$cosign_key" ]] || die "cosign public key is not readable: $cosign_key"
+    log 'Verifying image signature with cosign'
+    run cosign verify --key "$cosign_key" "$(image_reference)"
+}
+
+pull_image() {
+    local reference
+    reference="$(image_reference)"
+    log "Pulling $reference"
+    run docker pull "$reference"
+    if [[ "$dry_run" != "true" ]]; then
+        resolve_pulled_image
+        verify_image_digest
+        verify_image_signature
+    fi
+}
+
+bootstrap_container_exists() {
+    docker container inspect "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1
+}
+
+cleanup_bootstrap() {
+    if [[ "$bootstrap_started" == "true" && "$dry_run" != "true" ]] && bootstrap_container_exists; then
+        docker rm -f "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || true
+    fi
+}
+
+show_bootstrap_logs() {
+    if [[ "$dry_run" != "true" ]] && bootstrap_container_exists; then
+        docker logs --tail 120 "$BOOTSTRAP_CONTAINER" >&2 || true
+    fi
+}
+
+run_bootstrap() {
+    local reference password
+    reference="$(image_reference)"
+    if docker service inspect "$SERVICE_NAME" >/dev/null 2>&1; then
+        if [[ "$force" != "true" ]]; then
+            die "$SERVICE_NAME already exists; use upgrade or --force"
+        fi
+        die "an existing service cannot be reinstalled in place; use upgrade"
+    fi
+    if bootstrap_container_exists; then
+        if [[ "$force" != "true" ]]; then
+            die "$BOOTSTRAP_CONTAINER already exists; inspect it or rerun with --force"
+        fi
+        run docker rm -f "$BOOTSTRAP_CONTAINER"
+    fi
+
+    if [[ "$dry_run" == "true" ]]; then
+        log "would start detached bootstrap container $BOOTSTRAP_CONTAINER"
+        run docker run --name "$BOOTSTRAP_CONTAINER" --detach --pull always \
+            --publish "$http_port:80" --publish "$https_port:443" --publish "$admin_port:3000" \
+            --env ACCEPTED_TERMS=true --env MAIN_NODE_IP_ADDRESS="${node_ip:-<auto-detect>}" \
+            --env DEFAULT_PASSWORD='<generated-and-redacted>' \
+            --env CAPTAIN_HOST_HTTP_PORT="$http_port" \
+            --env CAPTAIN_HOST_HTTPS_PORT="$https_port" \
+            --env CAPTAIN_HOST_ADMIN_PORT="$admin_port" \
+            --env CAPTAIN_BASE_DIRECTORY="$data_dir" \
+            --env CAPTAIN_IMAGE="$reference" \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$data_dir:$data_dir" "$reference"
+        return 0
+    fi
+
+    password="$(tr -d '\r\n' <"$password_file")"
+    local -a args
+    # Keep the image as the final docker run argument. Optional environment
+    # flags must precede it as Docker expects.
+    args=(
+        docker run --name "$BOOTSTRAP_CONTAINER" --detach --pull always
+        --publish "$http_port:80" --publish "$https_port:443" --publish "$admin_port:3000"
+        --env ACCEPTED_TERMS=true --env DEFAULT_PASSWORD="$password"
+        --env CAPTAIN_HOST_HTTP_PORT="$http_port"
+        --env CAPTAIN_HOST_HTTPS_PORT="$https_port"
+        --env CAPTAIN_HOST_ADMIN_PORT="$admin_port"
+        --env CAPTAIN_BASE_DIRECTORY="$data_dir"
+        --env CAPTAIN_IMAGE="$reference"
+    )
+    if [[ -n "$node_ip" ]]; then
+        args+=(--env "MAIN_NODE_IP_ADDRESS=$node_ip")
+    fi
+    args+=(
+        --volume /var/run/docker.sock:/var/run/docker.sock
+        --volume "$data_dir:$data_dir"
+        "$reference"
+    )
+    "${args[@]}"
+    bootstrap_started="true"
+
+    local deadline state
+    deadline=$((SECONDS + 180))
+    while (( SECONDS < deadline )); do
+        state="$(docker inspect --format '{{.State.Status}}' "$BOOTSTRAP_CONTAINER" 2>/dev/null || true)"
+        if [[ "$state" == "exited" || "$state" == "dead" ]]; then
+            break
+        fi
+        sleep 2
+    done
+    show_bootstrap_logs
+    if docker service inspect "$SERVICE_NAME" >/dev/null 2>&1; then
+        log "bootstrap created $SERVICE_NAME"
+    else
+        die "bootstrap did not create $SERVICE_NAME within 180 seconds"
+    fi
+}
+
+wait_for_service() {
+    local deadline state health
+    deadline=$((SECONDS + 180))
+    while (( SECONDS < deadline )); do
+        if docker service inspect "$SERVICE_NAME" >/dev/null 2>&1; then
+            state="$(docker service ps --filter desired-state=running --format '{{.CurrentState}}' "$SERVICE_NAME" 2>/dev/null | head -n1 || true)"
+            if [[ "$state" == Running* ]]; then
+                if command -v curl >/dev/null 2>&1; then
+                    health="$(curl --fail --silent --max-time 5 "http://127.0.0.1:$admin_port/checkhealth" 2>/dev/null || true)"
+                    if [[ -n "$health" ]]; then
+                        log "control plane is healthy on port $admin_port"
+                        return 0
+                    fi
+                else
+                    log "control plane task is running (curl is unavailable for HTTP verification)"
+                    return 0
+                fi
+            fi
+        fi
+        sleep 3
+    done
+    docker service ps --no-trunc "$SERVICE_NAME" 2>/dev/null || true
+    docker service logs --tail 120 "$SERVICE_NAME" 2>/dev/null || true
+    die "control plane did not become healthy within 180 seconds"
+}
+
+configure_ufw() {
+    [[ "$configure_firewall" == "true" ]] || return 0
+    if [[ -z "$admin_cidr" && "$allow_public_admin" != "true" ]]; then
+        die 'refusing to expose the dashboard publicly; pass --admin-cidr or --allow-public-admin'
+    fi
+    if [[ "$dry_run" != "true" ]]; then
+        require_command ufw
+    fi
+    if [[ "$dry_run" == "true" ]]; then
+        run ufw allow "$ssh_port/tcp"
+        run ufw allow "$http_port/tcp"
+        run ufw allow "$https_port/tcp"
+        if [[ -n "$admin_cidr" ]]; then
+            run ufw allow from "$admin_cidr" to any port "$admin_port" proto tcp
+        else
+            run ufw allow "$admin_port/tcp"
+        fi
+        run ufw --force enable
+        return 0
+    fi
+    log 'Applying UFW rules after bootstrap (the bootstrap requires its ports reachable)'
+    ufw allow "$ssh_port/tcp" >/dev/null
+    ufw allow "$http_port/tcp" >/dev/null
+    ufw allow "$https_port/tcp" >/dev/null
+    if [[ -n "$admin_cidr" ]]; then
+        ufw allow from "$admin_cidr" to any port "$admin_port" proto tcp >/dev/null
+    else
+        warn "--allow-public-admin supplied; dashboard port $admin_port will be public"
+        ufw allow "$admin_port/tcp" >/dev/null
+    fi
+    ufw --force enable >/dev/null
+}
+
+print_completion() {
+    local reference
+    reference="$(image_reference)"
+    log 'Installation completed'
+    printf '\nNext steps:\n'
+    printf '  Dashboard: http://<VM_PUBLIC_IP>:%s\n' "$admin_port"
+    printf '  Initial password file: %s\n' "$(password_path)"
+    printf '  Image: %s\n' "$reference"
+    printf '  Data: %s\n' "$data_dir"
+    if [[ -n "$domain" ]]; then
+        printf '  Root domain recorded: %s\n' "$domain"
+    else
+        printf '  Pass --domain on a future run or configure the root domain in the dashboard.\n'
+    fi
+    printf '  Run: sudo %s doctor\n' "$SCRIPT_NAME"
+    printf '\nChange the generated password in the dashboard after first login.\n'
+}
+
+install_operation() {
+    confirm_terms
+    preflight
+    install_docker
+    if [[ "$dry_run" != "true" ]]; then
+        check_docker_compatibility
+    fi
+    ensure_directories
+    generate_password
+    pull_image
+    run_bootstrap
+    wait_for_service
+    write_manifest
+    configure_ufw
+    cleanup_bootstrap
+    print_completion
+}
+
+service_image() {
+    docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$SERVICE_NAME" 2>/dev/null || true
+}
+
+status_operation() {
+    printf 'CapRover Next status\n\n'
+    if command -v docker >/dev/null 2>&1; then
+        printf 'Docker: '
+        if docker info >/dev/null 2>&1; then
+            printf 'available\n'
+            printf 'Docker version: %s\n' "$(docker version --format '{{.Server.Version}}' 2>/dev/null || printf unknown)"
+            printf 'Swarm: %s\n' "$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || printf unknown)"
+            printf 'Service: '
+            if docker service inspect "$SERVICE_NAME" >/dev/null 2>&1; then
+                printf 'present\n'
+                printf 'Image: %s\n' "$(service_image)"
+                docker service ps --no-trunc "$SERVICE_NAME" 2>/dev/null || true
+            else
+                printf 'missing\n'
+            fi
+        else
+            printf 'daemon unavailable\n'
+        fi
+    else
+        printf 'Docker: command missing\n'
+    fi
+    if [[ -f "$(manifest_path)" ]]; then
+        printf '\nInstaller manifest (%s):\n' "$(manifest_path)"
+        sed 's/\(PASSWORD\|TOKEN\|SECRET\)=.*/\1=<redacted>/' "$(manifest_path)"
+    fi
+    if [[ -f "$(password_path)" ]]; then
+        printf 'Initial password file: %s (mode %s)\n' "$(password_path)" "$(stat -c '%a' "$(password_path)" 2>/dev/null || stat -f '%Lp' "$(password_path)")"
+    fi
+}
+
+doctor_operation() {
+    local saved_operation="$operation"
+    operation="doctor"
+    preflight
+    if [[ "$dry_run" != "true" ]]; then
+        check_docker_compatibility
+        if docker service inspect "$SERVICE_NAME" >/dev/null 2>&1; then
+            wait_for_service
+        else
+            warn "$SERVICE_NAME is not present"
+        fi
+    fi
+    operation="$saved_operation"
+    log 'Doctor checks completed'
+}
+
+upgrade_operation() {
+    require_privileges
+    [[ "$dry_run" == "true" || -n "$(command -v docker || true)" ]] || die 'Docker is required for upgrade'
+    if [[ "$dry_run" != "true" ]]; then
+        check_docker_compatibility
+        docker service inspect "$SERVICE_NAME" >/dev/null 2>&1 || die "$SERVICE_NAME does not exist; run install first"
+        service_is_owned || die "refusing to update $SERVICE_NAME: CapRover ownership label is missing"
+    fi
+    ensure_directories
+    pull_image
+    local previous_image reference
+    previous_image="$(service_image)"
+    reference="$(image_reference)"
+    log "Updating $SERVICE_NAME to $reference"
+    if [[ "$dry_run" == "true" ]]; then
+        run docker service update --detach=false --image "$reference" "$SERVICE_NAME"
+        return 0
+    fi
+    if ! docker service update --detach=false --image "$reference" "$SERVICE_NAME"; then
+        warn 'service update failed; requesting Docker rollback'
+        docker service update --detach=false --rollback "$SERVICE_NAME" || true
+        die "upgrade failed; previous image was $previous_image"
+    fi
+    if ! wait_for_service; then
+        warn 'health check failed; requesting Docker rollback'
+        docker service update --detach=false --rollback "$SERVICE_NAME" || true
+        die "upgrade failed and rollback was requested"
+    fi
+    write_manifest
+    log 'Upgrade completed successfully'
+}
+
+rollback_operation() {
+    require_privileges
+    if [[ "$dry_run" == "true" ]]; then
+        run docker service update --detach=false --rollback "$SERVICE_NAME"
+        return 0
+    fi
+    check_docker_compatibility
+    docker service inspect "$SERVICE_NAME" >/dev/null 2>&1 || die "$SERVICE_NAME does not exist"
+    service_is_owned || die "refusing to roll back $SERVICE_NAME: CapRover ownership label is missing"
+    docker service update --detach=false --rollback "$SERVICE_NAME"
+    wait_for_service
+    log 'Rollback completed successfully'
+}
+
+backup_operation() {
+    require_privileges
+    ensure_directories
+    local backup_path
+    backup_path="$data_dir/installer/backups/caprover-data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+    if [[ "$dry_run" == "true" ]]; then
+        run install -d -m 0700 "$data_dir/installer/backups"
+        run tar -C "$data_dir" -czf "$backup_path" data
+        log "would create encrypted-at-rest backup at $backup_path; protect it as it contains secrets"
+        return 0
+    fi
+    install -d -m 0700 "$data_dir/installer/backups"
+    tar -C "$data_dir" -czf "$backup_path" data
+    chmod 0600 "$backup_path"
+    log "backup created: $backup_path"
+}
+
+service_is_owned() {
+    local managed
+    managed="$(docker service inspect --format '{{index .Spec.Labels "com.caprover.managed"}}' "$SERVICE_NAME" 2>/dev/null || true)"
+    [[ "$managed" == "true" ]]
+}
+
+uninstall_operation() {
+    require_privileges
+    if [[ "$dry_run" == "true" ]]; then
+        run docker service rm "$SERVICE_NAME"
+        if [[ "$remove_data" == "true" ]]; then
+            run rm -rf "$data_dir"
+        fi
+        return 0
+    fi
+    check_docker_compatibility
+    if docker service inspect "$SERVICE_NAME" >/dev/null 2>&1; then
+        service_is_owned || die "refusing to remove $SERVICE_NAME: ownership labels/image could not be verified"
+        if [[ "$non_interactive" != "true" ]]; then
+            read -r -p "Remove the verified CapRover control-plane service? [y/N] " answer
+            [[ "$answer" == "y" || "$answer" == "Y" ]] || die 'uninstall cancelled'
+        fi
+        docker service rm "$SERVICE_NAME"
+        log "$SERVICE_NAME removed; application services and /captain data were preserved"
+    else
+        log "$SERVICE_NAME is already absent"
+    fi
+    if [[ "$remove_data" == "true" ]]; then
+        [[ "$non_interactive" == "true" ]] || die '--remove-data requires --non-interactive for a scripted destructive operation'
+        case "$data_dir" in
+            /captain|*/captain) ;;
+            *) die "refusing to remove unexpected data path: $data_dir" ;;
+        esac
+        rm -rf -- "$data_dir"
+        log "removed persistent data at $data_dir"
+    fi
+}
+
+on_error() {
+    local exit_code="$1"
+    if [[ "$bootstrap_started" == "true" ]]; then
+        warn "operation failed with exit code $exit_code"
+        show_bootstrap_logs
+        cleanup_bootstrap
+    fi
+}
+
+main() {
+    parse_args "$@"
+    require_privileges
+    trap 'on_error $?' ERR
+
+    case "$operation" in
+        install) install_operation ;;
+        status) status_operation ;;
+        doctor) doctor_operation ;;
+        upgrade) upgrade_operation ;;
+        rollback) rollback_operation ;;
+        backup) backup_operation ;;
+        uninstall) uninstall_operation ;;
+        *) die "unsupported operation: $operation" ;;
+    esac
+}
+
+main "$@"

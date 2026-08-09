@@ -1,11 +1,12 @@
-# Terms & Conditions
+# CapRover Next Terms & Conditions
 
-_In future versions, this will be added to the installation_
+CapRover Next is an independently distributed fork of CapRover. It is not an
+official CapRover service or distribution.
 
 CapRover core is a free and source-available program developed collectively by tens of developers across the world. Use CapRover at your own risk.
 
-Developers of CapRover do their best to prevent bugs and issues through rigorous testing processes and clean code principles. CapRover is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and limitations under the [License](https://github.com/caprover/caprover/blob/master/LICENSE).
+Developers of CapRover Next do their best to prevent bugs and issues through rigorous testing processes and clean code principles. CapRover Next is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and limitations under the [License](LICENSE).
 
 By using CapRover you agree to Terms and Conditions, and the license of CapRover.
 

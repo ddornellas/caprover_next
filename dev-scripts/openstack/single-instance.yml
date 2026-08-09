@@ -75,35 +75,23 @@ resources:
         #!/bin/bash
         set -e
 
-        echo "Installing Docker using the official repository"
+        echo "Installing CapRover Next with the versioned VM installer"
         apt-get update
         apt-get install -y ca-certificates curl
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-        chmod a+r /etc/apt/keyrings/docker.asc
-
-        . /etc/os-release
-        cat >/etc/apt/sources.list.d/docker.sources <<EOF
-        Types: deb
-        URIs: https://download.docker.com/linux/ubuntu
-        Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
-        Components: stable
-        Architectures: $(dpkg --print-architecture)
-        Signed-By: /etc/apt/keyrings/docker.asc
-        EOF
-
-        apt-get update
-        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-        systemctl enable --now docker
-        docker run --rm hello-world
-
-        echo "Installing CapRover"
-        install -d -m 0755 /captain
-        docker run --pull always \
-          -p 80:80 \
-          -p 443:443 \
-          -p 3000:3000 \
-          -e ACCEPTED_TERMS=true \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -v /captain:/captain \
-          caprover/caprover:latest
+        CAPROVER_VERSION=1.15.0
+        INSTALL_DIR=/run/caprover-next-install
+        install -d -m 0700 "$INSTALL_DIR"
+        curl --fail --silent --show-error --location \
+          --output "$INSTALL_DIR/caprover-next-install" \
+          "https://github.com/ddornellas/caprover_next/releases/download/v${CAPROVER_VERSION}/caprover-next-install"
+        curl --fail --silent --show-error --location \
+          --output "$INSTALL_DIR/checksums.txt" \
+          "https://github.com/ddornellas/caprover_next/releases/download/v${CAPROVER_VERSION}/checksums.txt"
+        (cd "$INSTALL_DIR" && sha256sum -c checksums.txt)
+        chmod 0755 "$INSTALL_DIR/caprover-next-install"
+        "$INSTALL_DIR/caprover-next-install" install \
+          --version "$CAPROVER_VERSION" \
+          --configure-firewall \
+          --allow-public-admin \
+          --non-interactive \
+          --accept-terms

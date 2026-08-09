@@ -32,6 +32,7 @@ export default {
         CAPTAIN_HOST_HTTP_PORT: 'CAPTAIN_HOST_HTTP_PORT',
         CAPTAIN_HOST_HTTPS_PORT: 'CAPTAIN_HOST_HTTPS_PORT',
         CAPTAIN_HOST_ADMIN_PORT: 'CAPTAIN_HOST_ADMIN_PORT',
+        CAPTAIN_IMAGE: 'CAPTAIN_IMAGE',
     },
 
     BY_PASS_PROXY_CHECK: process.env.BY_PASS_PROXY_CHECK,
@@ -72,4 +73,8 @@ export default {
         !!process.env.CAPROVER_DISABLE_ANALYTICS || !!process.env.DO_NOT_TRACK,
 
     CAPTAIN_BASE_DIRECTORY: process.env.CAPTAIN_BASE_DIRECTORY,
+
+    // Set only by the host installer so the initial Swarm service can use the
+    // exact tag or digest that was pulled and verified.
+    CAPTAIN_IMAGE: process.env.CAPTAIN_IMAGE,
 }

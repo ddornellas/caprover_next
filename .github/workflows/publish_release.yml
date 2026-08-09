@@ -1,4 +1,4 @@
-name: Build and push the release image
+name: Build and publish the CapRover Next release
 
 on:
     push:
@@ -34,6 +34,18 @@ jobs:
                   REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
               run: |
                   printf '%s' "$REGISTRY_PASSWORD" | docker login --username "$REGISTRY_USERNAME" --password-stdin
-            - name: Build and Push Release to DockerHub
+            - name: Build and push CapRover Next to Docker Hub
               shell: bash
               run: ./dev-scripts/build_and_push_release.sh
+            - name: Package the VM installer
+              shell: bash
+              run: |
+                  install -d release-artifacts
+                  install -m 0755 install/caprover-next-install release-artifacts/caprover-next-install
+                  (cd release-artifacts && sha256sum caprover-next-install > checksums.txt)
+                  tar -C release-artifacts -czf release-artifacts/caprover-next-installer.tar.gz caprover-next-install checksums.txt
+            - name: Upload VM installer artifact
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: caprover-next-installer
+                  path: release-artifacts/

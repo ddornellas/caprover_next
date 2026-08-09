@@ -15,7 +15,10 @@ const CONSTANT_FILE_OVERRIDE_USER =
     CAPTAIN_DATA_DIRECTORY + '/config-override.json'
 
 const configs = {
-    publishedNameOnDockerHub: 'caprover/caprover',
+    // CapRover Next publishes its control-plane image in its own namespace.
+    // Keep the property name for compatibility with the existing version and
+    // service orchestration code.
+    publishedNameOnDockerHub: 'ddornellas/caprover-next',
 
     version: '1.15.0',
 

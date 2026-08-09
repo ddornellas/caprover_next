@@ -462,7 +462,9 @@ export function install() {
 
             const ports: IAppPort[] = []
 
-            let captainNameAndVersion = `${CaptainConstants.configs.publishedNameOnDockerHub}:${CaptainConstants.configs.version}`
+            let captainNameAndVersion =
+                EnvVar.CAPTAIN_IMAGE ||
+                `${CaptainConstants.configs.publishedNameOnDockerHub}:${CaptainConstants.configs.version}`
 
             if (CaptainConstants.isDebug) {
                 captainNameAndVersion =

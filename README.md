@@ -1,13 +1,10 @@
 <div align="center">
-<h1>CapRover</h1>
-<a href="https://hub.docker.com/r/caprover/caprover/" target="_blank" title="Docker Pulls">
-<img src="https://img.shields.io/docker/pulls/caprover/caprover.svg" alt="Docker Pulls"/>
+<h1>CapRover Next</h1>
+<a href="https://hub.docker.com/r/ddornellas/caprover-next/" target="_blank" title="Docker Pulls">
+<img src="https://img.shields.io/docker/pulls/ddornellas/caprover-next.svg" alt="Docker Pulls"/>
 </a>
-<a href="https://opencollective.com/caprover#backer" target="_blank" title="Open Collective backers and sponsors">
-<img src="https://img.shields.io/opencollective/all/caprover" alt="Open Collective backers and sponsors"/>
-</a>
-<a href="https://github.com/caprover/caprover/releases" target="_blank" title="GitHub release (latest by date)">
-<img src="https://img.shields.io/github/v/release/caprover/caprover" alt="GitHub release (latest by date)"/>
+<a href="https://github.com/ddornellas/caprover_next/releases" target="_blank" title="GitHub release (latest by date)">
+<img src="https://img.shields.io/github/v/release/ddornellas/caprover_next" alt="GitHub release (latest by date)"/>
 </a>
 
 Easiest app/database deployment platform and webserver package for your NodeJS, Python, PHP, Ruby, Go applications.
@@ -20,6 +17,12 @@ No Docker, nginx knowledge required!
 </div>
 
 ## What's this?
+
+CapRover Next is a separately distributed fork of CapRover with an automated,
+secure VM installer and additional control-plane improvements. It keeps the
+CapRover runtime contracts (`captain-*`, `/captain`, and API v2) so existing
+data can be migrated without renaming Docker resources. It is not an official
+CapRover distribution.
 
 CapRover is an extremely easy to use app/database deployment & web server manager for your **NodeJS, Python, PHP, ASP.NET, Ruby, MariaDB, MySQL, MongoDB, Postgres, WordPress (and etc...)** applications!
 
@@ -47,7 +50,9 @@ It's blazingly fast and very robust as it uses Docker, nginx, LetsEncrypt and Ne
 
 ## Learn More!
 
-For more details and documentation, please visit https://CapRover.com/
+For installation and release details, see the
+[VM installation and release runbook](docs/VM_DEPLOYMENT_AND_RELEASE.md).
+For upstream product documentation, visit https://CapRover.com/.
 
 ## Repository operations
 
@@ -63,13 +68,8 @@ the [roadmap](ROADMAP.md).
 For the agent API contract and deployment examples, see
 [agent access](docs/AGENT_ACCESS.md).
 
-## Contributors
+## Upstream attribution
 
-CapRover exists thanks to all the great people who have contributed to this project. [[Contribute](CONTRIBUTING.md)].
+CapRover Next retains the upstream CapRover license and acknowledges the
+contributors to the original project. [[Contribute](CONTRIBUTING.md)].
 <a href="https://github.com/caprover/caprover/graphs/contributors"><img src="https://opencollective.com/caprover/contributors.svg?width=690&button=false" /></a>
-
-## Financial Supporters
-
-A big thank you to all our supporters! 🙏
-
-[![Donate](https://opencollective.com/caprover/donate/button.png?color=blue)](https://opencollective.com/caprover#backer)

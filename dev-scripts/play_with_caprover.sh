@@ -18,7 +18,7 @@ else
   echo "Installing and setting up CapRover on play-with-docker.com environment"
 fi
 
-docker run -e ACCEPTED_TERMS=true -e MAIN_NODE_IP_ADDRESS='127.0.0.1' -p 80:80 -p 443:443 -p 3000:3000 -v /var/run/docker.sock:/var/run/docker.sock -v /captain:/captain caprover/caprover
+docker run -e ACCEPTED_TERMS=true -e MAIN_NODE_IP_ADDRESS='127.0.0.1' -p 80:80 -p 443:443 -p 3000:3000 -v /var/run/docker.sock:/var/run/docker.sock -v /captain:/captain ddornellas/caprover-next:1.15.0
 
 IP_WITH_DASH=$(ifconfig eth1 | grep 'inet addr' | cut -d: -f2 | awk '{print $1}' | sed 's/\./-/g')
 ##  ip172-18-0-34-bo5qqunad2eg00a35t5g-80.direct.labs.play-with-docker.com
@@ -78,6 +78,6 @@ echo "==================================="
 echo "==================================="
 echo " **** Installation is done! *****  "
 echo "CapRover is available at http://captain.${CAPROVER_ROOT_DOMAIN}"
-echo "Default password is: captain42"
+echo "This development helper uses the legacy direct-container flow; use install/caprover-next-install for production."
 echo "==================================="
 echo "==================================="

@@ -24,8 +24,9 @@
         "frontend:typecheck": "npm run typecheck --workspace=frontend",
         "e2e": "node ./e2e/caprover-smoke.mjs",
         "e2e:install": "playwright install chromium",
+        "installer:check": "bash -n ./install/caprover-next-install",
         "test": "jest",
-        "test:all": "npm test -- --runInBand --silent && npm run frontend:typecheck && npm run frontend:lint"
+        "test:all": "npm run installer:check && npm test -- --runInBand --silent && npm run frontend:typecheck && npm run frontend:lint"
     },
     "dependencies": {
         "axios": "^1.19.0",

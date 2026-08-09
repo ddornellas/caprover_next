@@ -1,4 +1,4 @@
-name: Build and push the edge image
+name: Build and publish the CapRover Next edge image
 
 on:
     push:
@@ -34,6 +34,6 @@ jobs:
                   REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
               run: |
                   printf '%s' "$REGISTRY_PASSWORD" | docker login --username "$REGISTRY_USERNAME" --password-stdin
-            - name: Build and Push Edge to DockerHub
+            - name: Build and push CapRover Next edge to Docker Hub
               shell: bash
               run: ./dev-scripts/build_and_push_edge.sh

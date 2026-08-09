@@ -13,173 +13,153 @@ product documentation remains on the [CapRover website](https://caprover.com/).
 - The CapRover version is defined in
   [`src/utils/CaptainConstants.ts`](../src/utils/CaptainConstants.ts), not in
   `package.json` (the npm package is private and remains at `0.0.0`).
+- Stable releases use `ddornellas/caprover-next`; edge releases use
+  `ddornellas/caprover-next-edge`.
 - The control plane uses Docker API `v1.43`. Install a current official Docker
   Engine; Docker Engine 25+ is the recommended baseline for CapRover.
 
-## Install a published image on a VM
+## Install CapRover Next on a VM
 
-### 1. Prepare the VM
+Use a dedicated VM with a public, stable IPv4 address. Ubuntu 22.04/24.04 and
+Debian 12+ are supported. Allocate at least 1 GB of RAM and enough disk for
+the applications you plan to build. Proxmox LXC containers are rejected; use a
+real VM instead.
 
-Use a dedicated VM with a public, stable IPv4 address. Ubuntu 22.04 or newer
-is the recommended operating system. Plan for at least 1 GB of RAM; Docker
-builds may need more memory or swap depending on the applications being
-deployed.
+The installer installs Docker Engine from the official repository, prepares
+`/captain`, creates a random initial admin password, runs the existing
+CapRover bootstrap in the background, waits for `captain-captain` to be
+healthy, and writes a protected manifest under `/etc/caprover-next`.
 
-Install Docker Engine using the [official Ubuntu installation
-instructions](https://docs.docker.com/engine/install/ubuntu/). Do not use the
-Snap package for Docker. Verify the daemon and API version before installing
-CapRover:
-
-```bash
-sudo docker version
-sudo docker run --rm hello-world
-```
-
-The server must not be a Proxmox LXC container. The installer rejects hosts
-whose kernel identifies them as `-pve` because Docker Swarm networking is not
-reliable in that environment.
-
-Create the persistent CapRover directory. It contains application metadata,
-certificates, registry data, and generated configuration:
+Download a released installer and verify it before running it:
 
 ```bash
-sudo install -d -m 0755 /captain
+VERSION=1.15.0
+curl -fsSLO "https://github.com/ddornellas/caprover_next/releases/download/v${VERSION}/caprover-next-install"
+curl -fsSLO "https://github.com/ddornellas/caprover_next/releases/download/v${VERSION}/checksums.txt"
+sha256sum -c checksums.txt
+chmod 0755 caprover-next-install
 ```
 
-### 2. Configure networking
-
-The VM provider firewall/security group and the VM firewall must allow the
-same ports. For a single-node installation, expose these ports to the
-internet:
+Install the stable channel:
 
 ```bash
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw allow 443/udp
-sudo ufw allow 3000/tcp
+sudo ./caprover-next-install install \
+  --version 1.15.0 \
+  --domain apps.example.com \
+  --node-ip <VM_PUBLIC_IP> \
+  --accept-terms
 ```
 
-For a cluster or the built-in registry, also allow the Swarm and registry
-ports. Restrict these rules to the other cluster nodes whenever possible:
+For a VM behind NAT, pass the address reachable by the Swarm node instead:
 
 ```bash
-sudo ufw allow 80,443,3000,996,7946,4789,2377/tcp
-sudo ufw allow 7946,4789,2377,443/udp
+sudo ./caprover-next-install install --node-ip 192.168.1.20 --accept-terms
 ```
 
-Port 3000 is used for the initial setup and can be blocked after the dashboard
-is attached to a domain. See the [CapRover firewall
-documentation](https://caprover.com/docs/firewall.html) for provider-specific
-firewall considerations.
+The installer never deletes an existing `/captain`. If `captain-captain`
+already exists, it stops and asks you to use `upgrade` rather than silently
+replacing a running installation.
 
-Create a DNS A record for the VM and a wildcard record for applications. For
-example:
+For an existing installation that still runs `caprover/caprover`, do not run
+`install` again. Take a backup and migrate the control-plane image in place:
+
+```bash
+sudo ./caprover-next-install backup
+sudo ./caprover-next-install upgrade \
+  --image ddornellas/caprover-next \
+  --version 1.15.0 \
+  --image-digest sha256:<64-hex>
+```
+
+The service name, `/captain` data, volumes, labels, and API v2 remain unchanged
+by this migration.
+
+### Network and firewall
+
+The provider firewall must allow TCP 80 and 443. Port 3000 is needed during
+the first setup. The installer can configure UFW only when explicitly asked:
+
+```bash
+sudo ./caprover-next-install install \
+  --domain apps.example.com \
+  --admin-cidr 198.51.100.0/24 \
+  --configure-firewall \
+  --accept-terms
+```
+
+Without `--admin-cidr`, the dashboard port is opened publicly and a warning is
+printed. Restrict it to an administrator network whenever possible. Swarm
+ports (2377/tcp, 7946/tcp+udp, and 4789/udp) must be opened only between nodes
+when adding workers. If SSH is not on port 22, pass `--ssh-port` so the
+installer does not lock out the administrator. Keep DNS records pointed
+directly at the VM while
+requesting certificates:
 
 ```text
 apps.example.com       A  <VM_PUBLIC_IP>
 *.apps.example.com     A  <VM_PUBLIC_IP>
 ```
 
-During setup, the CapRover root domain will be `apps.example.com` and the
-dashboard will be available at `captain.apps.example.com`. Use DNS-only mode
-while configuring a proxy service such as Cloudflare; CapRover needs the DNS
-records to resolve directly to the VM.
-
-### 3. Start the installer
-
-Use a released version for production. Replace `1.15.0` with the version being
-installed:
+The installer prints the initial password file. Read it once, log in, and
+change the password immediately:
 
 ```bash
-CAPROVER_VERSION=1.15.0
-
-sudo docker run --pull always \
-  -p 80:80 \
-  -p 443:443 \
-  -p 3000:3000 \
-  -e ACCEPTED_TERMS=true \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /captain:/captain \
-  "caprover/caprover:${CAPROVER_VERSION}"
+sudo cat /etc/caprover-next/initial-admin-password
 ```
 
-The installer checks the host, initializes Docker Swarm, and creates the
-`captain-captain` service. It may take at least 60 seconds after the installer
-exits. Follow the service logs from another SSH session:
+### Installer operations
 
 ```bash
-sudo docker service ls
-sudo docker service logs --since 10m captain-captain
+sudo ./caprover-next-install status
+sudo ./caprover-next-install doctor
+sudo ./caprover-next-install backup
+sudo ./caprover-next-install upgrade --version 1.16.0 --image-digest sha256:<64-hex>
+sudo ./caprover-next-install rollback
 ```
 
-For an edge build, use `caprover/caprover-edge:latest` in the same command.
-Edge is intended for testing the next version and should not be used for a
-production installation.
-
-If the VM is private or behind NAT, set the address explicitly for a local or
-single-machine test by adding this option to the installer command:
+`upgrade` waits for a healthy service and requests a Docker rollback if the
+new task fails. `backup` writes a mode-0600 archive below
+`/captain/installer/backups`; copy it to separate storage. `uninstall` removes
+only a service carrying CapRover's managed-service label and preserves data by
+default:
 
 ```bash
--e MAIN_NODE_IP_ADDRESS=127.0.0.1
+sudo ./caprover-next-install uninstall
 ```
 
-This bypasses public-IP discovery, but public HTTPS and access from outside
-the VM still require the appropriate routing and port forwarding.
-
-### 4. Finish the first-time setup
-
-Open `http://<VM_PUBLIC_IP>:3000` and configure the root domain as
-`apps.example.com`. Then:
-
-1. Enable HTTPS and force HTTPS after DNS resolves.
-2. Change the default password (`captain42`) immediately.
-3. Confirm that `https://captain.apps.example.com` loads.
-4. Block port 3000 at the provider firewall after setup if it is no longer
-   needed.
-
-The CLI can also complete the setup from a developer workstation:
+Removing data is a separate, non-interactive destructive action:
 
 ```bash
-npm install --global caprover
-caprover serversetup
+sudo ./caprover-next-install uninstall --remove-data --non-interactive
 ```
+
+For CI or cloud-init, use `--non-interactive` and pin both the image version
+and digest. Use `--dry-run` to inspect all commands before making changes.
+
+## Cloud-init and provider automation
+
+The checked-in example at
+[`examples/cloud-init/caprover-next.yaml`](../examples/cloud-init/caprover-next.yaml)
+installs a pinned release during the first boot. Copy it into a provider's
+user-data field, replace the release URL, domain, node IP, and admin CIDR, and
+keep the provider security group aligned with the VM firewall. Terraform and
+Ansible should call the same installer rather than reimplementing Docker or
+Swarm setup.
 
 ## Deploy a new image to an existing VM
 
-Back up the instance before an upgrade. Keep `/captain` intact; deleting it
-removes persistent CapRover state. The normal production deployment is an
-image update of the existing Swarm service:
+Use the operator CLI so every upgrade creates a consistent backup and health
+check:
 
 ```bash
-CAPROVER_VERSION=1.15.0
-
-sudo docker service update \
-  --detach=false \
-  --image "caprover/caprover:${CAPROVER_VERSION}" \
-  captain-captain
+sudo ./caprover-next-install backup
+sudo ./caprover-next-install upgrade \
+  --version 1.16.0 \
+  --image-digest sha256:<64-hex>
 ```
 
-For an edge deployment, force a refresh because the `latest` tag is reused:
-
-```bash
-sudo docker service update \
-  --detach=false \
-  --force \
-  --image caprover/caprover-edge:latest \
-  captain-captain
-```
-
-Verify the rollout and the application health before considering the upgrade
-complete:
-
-```bash
-sudo docker service ps --no-trunc captain-captain
-sudo docker service logs --since 10m captain-captain
-curl --fail --silent http://127.0.0.1:3000/checkhealth
-```
-
-If the new task does not become healthy, inspect the logs and roll back the
-service:
+Keep `/captain` intact; it contains application metadata, certificates,
+registry data, and generated configuration. For a manual emergency rollback:
 
 ```bash
 sudo docker service update --detach=false --rollback captain-captain
@@ -217,14 +197,17 @@ instance, see [`frontend/README.md`](../frontend/README.md) and the
 
 ### Image channels
 
-| GitHub event      | Workflow              | Published images                             | Platforms                    |
-| ----------------- | --------------------- | -------------------------------------------- | ---------------------------- |
-| Push to `master`  | `publish_edge.yml`    | `caprover/caprover-edge:0.0.1` and `:latest` | `linux/amd64`, `linux/arm64` |
-| Push to `release` | `publish_release.yml` | `caprover/caprover:<version>` and `:latest`  | `linux/amd64`, `linux/arm64` |
+| GitHub event      | Workflow                 | Published artifact                                  | Platforms                    |
+| ----------------- | ------------------------ | --------------------------------------------------- | ---------------------------- |
+| Push to `master`  | `publish_edge.yml`       | `ddornellas/caprover-next-edge:0.0.1` and `:latest` | `linux/amd64`, `linux/arm64` |
+| Push to `release` | `publish_release.yml`    | `ddornellas/caprover-next:<version>` and `:latest`  | `linux/amd64`, `linux/arm64` |
+| Tag `vX.Y.Z`      | `publish_installer.yml` | GitHub Release + VM installer                       | n/a                          |
 
 Both workflows run the build, lint, formatter, and test checks before the
 Docker publish job. The publish job requires the GitHub Actions secrets
-`REGISTRY_USERNAME` and `REGISTRY_PASSWORD` for Docker Hub.
+`REGISTRY_USERNAME` and `REGISTRY_PASSWORD` for the fork's Docker Hub
+namespace. The release workflow also uploads the installer and its checksum as
+an artifact; attach those files to the corresponding signed GitHub Release.
 
 ### Release checklist
 
@@ -232,7 +215,7 @@ Docker publish job. The publish job requires the GitHub Actions secrets
    entries under a dated version heading.
 2. Update `configs.version` in
    `src/utils/CaptainConstants.ts`. This value must be a new semantic version
-   greater than the existing release tags on Docker Hub.
+   greater than the existing release tags in the fork's Docker Hub repository.
 3. Run the same checks locally:
 
     ```bash
@@ -252,12 +235,15 @@ Docker publish job. The publish job requires the GitHub Actions secrets
 
     ```bash
     CAPROVER_VERSION=1.15.0
-    docker buildx imagetools inspect "caprover/caprover:${CAPROVER_VERSION}"
+    docker buildx imagetools inspect "ddornellas/caprover-next:${CAPROVER_VERSION}"
     ```
 
-6. Deploy the versioned image to the VM using the update procedure above. A
-   GitHub release or Git tag is a separate maintainer action; the workflow
-   only builds and publishes Docker images.
+6. Push a signed `vX.Y.Z` tag after the release branch has published the
+   image. `publish_installer.yml` validates the version and creates a GitHub
+   Release containing `caprover-next-install` and `checksums.txt`.
+
+7. Record the image digest in the release notes and deploy the versioned image
+   to the VM using the update procedure above.
 
 The publish scripts intentionally refuse local execution unless `CI` and
 `GITHUB_REF` are set. Do not run them manually on a workstation; test images

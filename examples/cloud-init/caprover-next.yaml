@@ -1,0 +1,41 @@
+#cloud-config
+#
+# Copy this file into a VM provider's user-data field, then replace the
+# release URL, domain, node IP, admin CIDR, and (preferably) image digest.
+# The installer itself installs Docker from the official repository.
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+
+write_files:
+  - path: /etc/caprover-next/cloud-init.env
+    owner: root:root
+    permissions: '0600'
+    content: |
+      CAPROVER_NEXT_VERSION=1.15.0
+      CAPROVER_NEXT_INSTALL_URL=https://github.com/ddornellas/caprover_next/releases/download/v1.15.0/caprover-next-install
+      CAPROVER_NEXT_CHECKSUMS_URL=https://github.com/ddornellas/caprover_next/releases/download/v1.15.0/checksums.txt
+      CAPROVER_NEXT_DOMAIN=apps.example.com
+      CAPROVER_NEXT_NODE_IP=203.0.113.10
+      CAPROVER_NEXT_ADMIN_CIDR=198.51.100.0/24
+      # Leave empty only for a temporary test; production should pin a digest.
+      CAPROVER_NEXT_IMAGE_DIGEST=
+
+runcmd:
+  - |
+      set -eu
+      # shellcheck disable=SC1091
+      . /etc/caprover-next/cloud-init.env
+      install -d -m 0700 /run/caprover-next-install
+      cd /run/caprover-next-install
+      curl --fail --silent --show-error --location --output caprover-next-install "$CAPROVER_NEXT_INSTALL_URL"
+      curl --fail --silent --show-error --location --output checksums.txt "$CAPROVER_NEXT_CHECKSUMS_URL"
+      sha256sum -c checksums.txt
+      chmod 0755 caprover-next-install
+      if [ -n "$CAPROVER_NEXT_IMAGE_DIGEST" ]; then
+        ./caprover-next-install install --version "$CAPROVER_NEXT_VERSION" --domain "$CAPROVER_NEXT_DOMAIN" --node-ip "$CAPROVER_NEXT_NODE_IP" --admin-cidr "$CAPROVER_NEXT_ADMIN_CIDR" --configure-firewall --non-interactive --accept-terms --image-digest "$CAPROVER_NEXT_IMAGE_DIGEST"
+      else
+        ./caprover-next-install install --version "$CAPROVER_NEXT_VERSION" --domain "$CAPROVER_NEXT_DOMAIN" --node-ip "$CAPROVER_NEXT_NODE_IP" --admin-cidr "$CAPROVER_NEXT_ADMIN_CIDR" --configure-firewall --non-interactive --accept-terms
+      fi

@@ -16,7 +16,7 @@ else
     echo "Running on CI"
 fi
 
-IMAGE_NAME=caprover/caprover
+IMAGE_NAME=ddornellas/caprover-next
 
 if [ ! -f ./package-lock.json ]; then
     echo "package-lock.json not found!"

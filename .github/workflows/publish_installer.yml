@@ -1,0 +1,44 @@
+name: Publish the CapRover Next VM installer
+
+on:
+    push:
+        tags:
+            - 'v*.*.*'
+
+permissions:
+    contents: write
+
+jobs:
+    release-installer:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - name: Validate release version
+              shell: bash
+              run: |
+                  set -Eeuo pipefail
+                  VERSION="${GITHUB_REF_NAME#v}"
+                  EXPECTED=$(sed -n "s/^[[:space:]]*version: '\([^']*\)'.*/\1/p" src/utils/CaptainConstants.ts | head -n1)
+                  if [[ -z "$EXPECTED" || "$EXPECTED" != "$VERSION" ]]; then
+                    echo "tag $VERSION does not match configs.version $EXPECTED"
+                    exit 1
+                  fi
+            - name: Build installer artifact
+              shell: bash
+              run: |
+                  set -Eeuo pipefail
+                  install -d release-artifacts
+                  install -m 0755 install/caprover-next-install release-artifacts/caprover-next-install
+                  (cd release-artifacts && sha256sum caprover-next-install > checksums.txt)
+            - name: Create GitHub Release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              shell: bash
+              run: |
+                  set -Eeuo pipefail
+                  gh release create "$GITHUB_REF_NAME" \
+                    --verify-tag \
+                    --title "CapRover Next ${GITHUB_REF_NAME#v}" \
+                    --generate-notes \
+                    release-artifacts/caprover-next-install \
+                    release-artifacts/checksums.txt
