@@ -35,11 +35,37 @@ function getBackendOrigin() {
     ).replace(/\/$/, '')
 }
 
+function isLoopbackHttpOrigin(origin: string) {
+    try {
+        const url = new URL(origin)
+
+        return (
+            url.protocol === 'http:' &&
+            ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname)
+        )
+    } catch {
+        return false
+    }
+}
+
+export function createServerApiHeaders(initHeaders: HeadersInit = {}) {
+    const headers = new Headers(initHeaders)
+
+    // The Next server calls the co-located Express API over loopback. When
+    // SSL is forced, tell Express that the original browser request was HTTPS
+    // so it does not redirect the internal request to local port 443.
+    if (isLoopbackHttpOrigin(getBackendOrigin())) {
+        headers.set('x-forwarded-proto', 'https')
+    }
+
+    return headers
+}
+
 async function serverApiRequest<T>(
     path: string,
     init: RequestInit = {}
 ): Promise<ApiResponse<T>> {
-    const headers = new Headers(init.headers)
+    const headers = createServerApiHeaders(init.headers)
     const requestCookies = await cookies()
     const cookieHeader = requestCookies.toString()
 

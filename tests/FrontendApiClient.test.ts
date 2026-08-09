@@ -5,6 +5,7 @@ import {
     readResponse,
     clientApiRequest,
 } from '../frontend/lib/api-client'
+import { createServerApiHeaders } from '../frontend/lib/caprover-api'
 
 describe('frontend API adapter', () => {
     it('accepts the API v2 success statuses', () => {
@@ -79,5 +80,14 @@ describe('frontend API adapter', () => {
         )
 
         fetchMock.mockRestore()
+    })
+
+    it('marks loopback server calls as HTTPS when SSL is forced', () => {
+        const headers = createServerApiHeaders({
+            'x-test-header': 'present',
+        })
+
+        expect(headers.get('x-test-header')).toBe('present')
+        expect(headers.get('x-forwarded-proto')).toBe('https')
     })
 })
