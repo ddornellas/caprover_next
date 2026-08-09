@@ -68,7 +68,13 @@ export function LoginForm() {
     return (
         <form className="space-y-5" onSubmit={submit}>
             {error && (
-                <Alert variant={needsOtp ? 'default' : 'destructive'}>
+                <Alert
+                    className={
+                        needsOtp
+                            ? 'border-sky-200 bg-sky-50 text-sky-900'
+                            : 'border-rose-200 bg-rose-50 text-rose-900'
+                    }
+                >
                     <AlertTitle>
                         {needsOtp ? 'Verification required' : 'Sign in failed'}
                     </AlertTitle>
@@ -77,16 +83,18 @@ export function LoginForm() {
             )}
 
             <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
+                <Label className="text-slate-700" htmlFor="password">
+                    Password
+                </Label>
                 <div className="relative">
-                    <LockKeyhole className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <LockKeyhole className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
                     <Input
                         id="password"
                         name="password"
                         type="password"
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
-                        className="pl-10"
+                        className="border-slate-300 bg-white text-slate-950 caret-slate-950 placeholder:text-slate-400 focus-visible:border-sky-500 focus-visible:ring-sky-500/30 pl-10"
                         maxLength={29}
                         autoComplete="current-password"
                         autoFocus
@@ -97,7 +105,9 @@ export function LoginForm() {
 
             {needsOtp && (
                 <div className="space-y-2">
-                    <Label htmlFor="otpToken">Authenticator code</Label>
+                    <Label className="text-slate-700" htmlFor="otpToken">
+                        Authenticator code
+                    </Label>
                     <Input
                         id="otpToken"
                         name="otpToken"
@@ -105,6 +115,7 @@ export function LoginForm() {
                         autoComplete="one-time-code"
                         value={otpToken}
                         onChange={(event) => setOtpToken(event.target.value)}
+                        className="border-slate-300 bg-white text-slate-950 caret-slate-950 placeholder:text-slate-400 focus-visible:border-sky-500 focus-visible:ring-sky-500/30"
                         placeholder="123456"
                         autoFocus
                         required
@@ -112,7 +123,11 @@ export function LoginForm() {
                 </div>
             )}
 
-            <Button className="w-full" type="submit" disabled={isPending}>
+            <Button
+                className="w-full bg-sky-600 text-white shadow-sm hover:bg-sky-700 focus-visible:ring-sky-500"
+                type="submit"
+                disabled={isPending}
+            >
                 {isPending ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
