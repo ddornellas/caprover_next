@@ -25,14 +25,17 @@ The goal is to make the common use-cases exposed via simple controls on UI while
 ### Running backend dev environment
 
 First, you need a Captain instance running in debug mode, this can be a remote server, a VM on your local machine,
-or your local machine itself. Needless to say, Docker is required (same minimum version as mentioned in README). Ubuntu is the best dev environment for CapRover.
+or your local machine itself. Docker and Node.js 24 are required. Ubuntu is the best dev environment for CapRover.
+
+The complete VM installation, deployment, and release procedure is in the
+[repository operations runbook](docs/VM_DEPLOYMENT_AND_RELEASE.md).
 
 Log in to your machine, clone the git repo and run the following lines:
 
 #### On Linux and Windows
 
 ```bash
-$   npm install
+$   npm ci
 $   npm run build
 $   sudo ./dev-scripts/dev-clean-run-as-dev.sh
 ```
@@ -67,7 +70,7 @@ Link this folder to the root folder (Apple does not allow to create folder on th
 use node 24 then
 
 ```bash
-$   npm install
+$   npm ci
 $   npm run build
 $   sudo ./dev-scripts/dev-clean-run-as-dev-macos-step-1.sh
 $   ./dev-scripts/dev-clean-run-as-dev-macos-step-2.sh
@@ -94,9 +97,12 @@ path of it will be printed on the terminal, otherwise, there won't be anything p
 
 To test the API, you can import the Postman collection JSON in `./dev-scripts` directory.
 
-### front end development:
+### Frontend development
 
-See https://github.com/caprover/caprover-frontend
+The active frontend is the Next.js application in `frontend/`. See
+[frontend/README.md](frontend/README.md) for its architecture and development
+commands. From the repository root, use `npm run frontend:dev` for the
+frontend-only development server or `npm run dev:next` for the custom server.
 
 ### CLI development:
 

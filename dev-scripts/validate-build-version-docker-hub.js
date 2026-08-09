@@ -7,25 +7,18 @@
 // # Make sure the two are the same
 // # Run API request to DockerHub and make sure it's a new version
 
-const requestOriginal = require('request')
 const fs = require('fs-extra')
 
-function request(url) {
-    return new Promise(function (resolve, reject) {
-        requestOriginal(url, function (error, response, body) {
-            if (body) {
-                body = JSON.parse(body)
-            }
+async function request(url) {
+    const response = await fetch(url)
 
-            if (error || !body) {
-                console.log('Error while fetching tags from Docker Hub!')
-                reject(error)
-                return
-            }
+    if (!response.ok) {
+        throw new Error(
+            `Docker Hub returned ${response.status} while fetching tags`
+        )
+    }
 
-            resolve(body)
-        })
-    })
+    return response.json()
 }
 
 let publishedNameOnDockerHub = ''
@@ -50,8 +43,7 @@ Promise.resolve()
     })
     .then(function (body) {
         if (!body.results || !body.results.length) {
-            console.log('Error while fetching tags from Docker Hub!')
-            throw error
+            throw new Error('Docker Hub returned no image tags')
         }
 
         var highestTag = ''

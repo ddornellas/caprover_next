@@ -49,6 +49,16 @@ It's blazingly fast and very robust as it uses Docker, nginx, LetsEncrypt and Ne
 
 For more details and documentation, please visit https://CapRover.com/
 
+## Repository operations
+
+Maintainers working from this repository should use the
+[VM installation, deployment, and release runbook](docs/VM_DEPLOYMENT_AND_RELEASE.md).
+It documents the current Node.js 24 build, Docker image channels, GitHub
+Actions release flow, and the safe way to update a VM.
+
+For contribution and local development details, see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the [frontend development notes](frontend/README.md).
+
 ## Contributors
 
 CapRover exists thanks to all the great people who have contributed to this project. [[Contribute](CONTRIBUTING.md)].
