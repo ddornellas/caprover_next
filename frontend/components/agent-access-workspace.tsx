@@ -39,6 +39,8 @@ interface DeploymentRequest {
     agentKeyName: string
     role: AgentRole
     appName: string
+    isNewApp?: boolean
+    description?: string
     captainDefinition: Record<string, unknown>
     status: string
     createdAt: string
@@ -127,7 +129,7 @@ export function AgentAccessWorkspace() {
         )
 
         if (!scopedApps.length) {
-            setError('Add at least one existing app to the key scope.')
+            setError('Add at least one app name to the key scope.')
             return
         }
 
@@ -344,8 +346,9 @@ export function AgentAccessWorkspace() {
                             ))}
                         </datalist>
                         <p className="text-xs text-muted-foreground">
-                            Separate names with commas. Wildcards are not
-                            supported.
+                            Separate names with commas. Exact future app names
+                            are allowed for agent-created apps; wildcards are
+                            not supported.
                         </p>
                     </div>
                     <div className="space-y-2">
@@ -463,6 +466,11 @@ export function AgentAccessWorkspace() {
                                     <div className="flex flex-wrap items-center gap-2">
                                         <Badge>{request.appName}</Badge>
                                         <Badge>{request.agentKeyName}</Badge>
+                                        {request.isNewApp && (
+                                            <Badge className="border-sky-300 bg-sky-50 text-sky-700">
+                                                New app
+                                            </Badge>
+                                        )}
                                         <span className="text-xs text-muted-foreground">
                                             Expires{' '}
                                             {formatDate(request.expiresAt)}

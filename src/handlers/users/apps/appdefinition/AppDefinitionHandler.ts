@@ -116,10 +116,54 @@ export async function getAllAppDefinitions(
             const app = apps[key]
             app.appName = key
             app.isAppBuilding = serviceManager.isAppBuilding(key)
+            app.status =
+                Number(app.instanceCount) === 0 ? 'paused' : 'published'
             app.isLegacyAppName = !!app.isLegacyAppName
             app.appPushWebhook = app.appPushWebhook || undefined
             appsArray.push(app)
         })
+
+        const existingAppNames = new Set(Object.keys(apps))
+        const pendingAgentRequests =
+            typeof dataStore.getAgentDeploymentRequests === 'function'
+                ? await dataStore.getAgentDeploymentRequests()
+                : []
+        pendingAgentRequests
+            .filter(
+                (request) =>
+                    request.isNewApp &&
+                    request.status === 'pending' &&
+                    Date.parse(request.expiresAt) > Date.now() &&
+                    !existingAppNames.has(request.appName)
+            )
+            .forEach((request) => {
+                appsArray.push({
+                    appName: request.appName,
+                    projectId: '',
+                    description:
+                        request.description ||
+                        'Waiting for human approval before deployment.',
+                    deployedVersion: 0,
+                    notExposeAsWebApp: true,
+                    hasPersistentData: false,
+                    hasDefaultSubDomainSsl: false,
+                    captainDefinitionRelativeFilePath: 'captain-definition',
+                    forceSsl: false,
+                    websocketSupport: false,
+                    instanceCount: 0,
+                    networks: [],
+                    customDomain: [],
+                    ports: [],
+                    volumes: [],
+                    envVars: [],
+                    versions: [],
+                    tags: [{ tagName: 'agent' }],
+                    status: 'on_approval',
+                    isAgentPending: true,
+                    agentDeploymentRequestId: request.id,
+                    isAppBuilding: false,
+                })
+            })
 
         const defaultNginxConfig = await dataStore.getDefaultAppNginxConfig()
 

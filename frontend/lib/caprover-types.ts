@@ -46,6 +46,8 @@ export interface AppTag {
     tagName: string
 }
 
+export type AppStatus = 'published' | 'on_approval' | 'paused'
+
 export interface AppDeployTokenConfig {
     enabled: boolean
     appDeployToken?: string
@@ -101,6 +103,9 @@ export interface AppDefinition {
     httpAuth?: AppHttpAuth
     isLegacyAppName?: boolean
     isAppBuilding?: boolean
+    status?: AppStatus
+    isAgentPending?: boolean
+    agentDeploymentRequestId?: string
 }
 
 export interface AppsPayload {

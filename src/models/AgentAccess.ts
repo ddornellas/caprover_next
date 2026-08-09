@@ -33,6 +33,8 @@ export interface AgentDeploymentRequest {
     agentKeyName: string
     role: AgentRole
     appName: string
+    isNewApp: boolean
+    description?: string
     captainDefinition: ICaptainDefinition
     gitHash?: string
     status: AgentDeploymentStatus

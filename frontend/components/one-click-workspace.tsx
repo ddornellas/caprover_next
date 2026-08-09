@@ -8,6 +8,9 @@ import {
     Plus,
     RefreshCw,
     Rocket,
+    Search,
+    Settings2,
+    X,
     Trash2,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -22,6 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 interface OneClickIdentifier {
@@ -31,6 +35,7 @@ interface OneClickIdentifier {
     displayName: string
     description: string
     logoUrl: string
+    tags?: string[]
 }
 
 interface DeploymentState {
@@ -50,6 +55,101 @@ interface OneClickWorkspaceProps {
     initialTemplate?: string
     initialValues?: string
     initialTemplateName?: string
+}
+
+const OFFICIAL_ONE_CLICK_BASE_URL = 'https://oneclickapps.caprover.com'
+
+const inferredTagRules: Array<{ label: string; terms: string[] }> = [
+    {
+        label: 'Database',
+        terms: ['database', 'mysql', 'mariadb', 'postgres', 'mongodb', 'redis'],
+    },
+    {
+        label: 'Monitoring',
+        terms: ['monitor', 'metrics', 'grafana', 'prometheus', 'logging'],
+    },
+    {
+        label: 'Storage',
+        terms: ['storage', 'minio', 's3', 'backup', 'files'],
+    },
+    {
+        label: 'Developer tools',
+        terms: ['developer', 'devops', 'git', 'ci', 'build', 'registry'],
+    },
+    {
+        label: 'Web',
+        terms: ['web', 'server', 'proxy', 'cms', 'blog', 'api'],
+    },
+]
+
+function uniqueStrings(values: string[]) {
+    return Array.from(
+        new Set(
+            values
+                .map((value) => value.trim())
+                .filter(Boolean)
+                .map((value) => value.slice(0, 40))
+        )
+    )
+}
+
+function normalizeSearchText(value: string) {
+    return value
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+}
+
+function getAppTags(app: OneClickIdentifier) {
+    const searchableText = `${app.name} ${app.displayName} ${app.description}`
+        .toLowerCase()
+        .trim()
+    const inferred = inferredTagRules
+        .filter((rule) =>
+            rule.terms.some((term) => searchableText.includes(term))
+        )
+        .map((rule) => rule.label)
+
+    return uniqueStrings([...(app.tags || []), ...inferred]).slice(0, 5)
+}
+
+function getSourceLabel(app: OneClickIdentifier) {
+    if (app.isOfficial || app.baseUrl === OFFICIAL_ONE_CLICK_BASE_URL) {
+        return 'Official catalog'
+    }
+
+    try {
+        return new URL(app.baseUrl).hostname
+    } catch {
+        return app.baseUrl
+    }
+}
+
+function getSearchScore(app: OneClickIdentifier, value: string) {
+    const terms = normalizeSearchText(value).trim().split(/\s+/).filter(Boolean)
+    if (!terms.length) return 1
+
+    const fields = [
+        { value: normalizeSearchText(app.displayName), weight: 8 },
+        { value: normalizeSearchText(app.name), weight: 7 },
+        {
+            value: normalizeSearchText(app.tags?.join(' ') || ''),
+            weight: 5,
+        },
+        { value: normalizeSearchText(getAppTags(app).join(' ')), weight: 4 },
+        { value: normalizeSearchText(app.description), weight: 3 },
+        { value: normalizeSearchText(getSourceLabel(app)), weight: 2 },
+    ]
+
+    let score = 0
+    for (const term of terms) {
+        const field = fields.find((candidate) => candidate.value.includes(term))
+        if (!field) return 0
+        score += field.weight
+        if (field.value.startsWith(term)) score += 2
+    }
+
+    return score
 }
 
 function getErrorMessage(error: unknown) {
@@ -115,6 +215,13 @@ export function OneClickWorkspace({
     const [working, setWorking] = useState(false)
     const [notice, setNotice] = useState<string>()
     const [error, setError] = useState<string>()
+    const [searchTerm, setSearchTerm] = useState('')
+    const [sourceFilter, setSourceFilter] = useState('all')
+    const [tagFilter, setTagFilter] = useState('all')
+    const [sortOrder, setSortOrder] = useState<'relevance' | 'name'>(
+        'relevance'
+    )
+    const [showCatalogManager, setShowCatalogManager] = useState(false)
     const deploymentStarted = useRef(false)
 
     const parsedTemplate = useMemo(() => {
@@ -124,6 +231,55 @@ export function OneClickWorkspace({
             return undefined
         }
     }, [templateText])
+
+    const availableSources = useMemo(() => {
+        const sources = new Map<string, string>()
+        apps.forEach((app) => sources.set(app.baseUrl, getSourceLabel(app)))
+        return Array.from(sources.entries()).sort((left, right) =>
+            left[1].localeCompare(right[1])
+        )
+    }, [apps])
+
+    const availableTags = useMemo(() => {
+        return Array.from(new Set(apps.flatMap((app) => getAppTags(app)))).sort(
+            (left, right) => left.localeCompare(right)
+        )
+    }, [apps])
+
+    const filteredApps = useMemo(() => {
+        return apps
+            .map((app) => ({ app, score: getSearchScore(app, searchTerm) }))
+            .filter(({ app, score }) => {
+                const sourceMatches =
+                    sourceFilter === 'all' || app.baseUrl === sourceFilter
+                const tagMatches =
+                    tagFilter === 'all' || getAppTags(app).includes(tagFilter)
+                return sourceMatches && tagMatches && score > 0
+            })
+            .sort((left, right) => {
+                if (sortOrder === 'name') {
+                    return left.app.displayName.localeCompare(
+                        right.app.displayName
+                    )
+                }
+
+                if (
+                    !searchTerm.trim() &&
+                    left.app.isOfficial !== right.app.isOfficial
+                ) {
+                    return (
+                        Number(right.app.isOfficial) -
+                        Number(left.app.isOfficial)
+                    )
+                }
+
+                return (
+                    right.score - left.score ||
+                    left.app.displayName.localeCompare(right.app.displayName)
+                )
+            })
+            .map(({ app }) => app)
+    }, [apps, searchTerm, sortOrder, sourceFilter, tagFilter])
 
     async function loadCatalog() {
         setLoading(true)
@@ -636,66 +792,224 @@ export function OneClickWorkspace({
                     <h1 className="mt-2 text-3xl font-semibold tracking-tight">
                         One-click apps
                     </h1>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                        Choose an app from the official or configured
-                        repositories, then review its variables before
-                        deployment.
+                    <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+                        Find packaged apps quickly, filter them by source or
+                        category, then review their variables before deploying.
                     </p>
                 </div>
-                <Button
-                    variant="outline"
-                    type="button"
-                    disabled={loading}
-                    onClick={() => void loadCatalog()}
-                >
-                    <RefreshCw className={loading ? 'animate-spin' : ''} />{' '}
-                    Refresh
-                </Button>
-            </div>
-            <Card>
-                <CardHeader>
-                    <CardTitle>Custom repositories</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                    <form
-                        className="flex flex-col gap-2 sm:flex-row"
-                        onSubmit={addRepository}
+                <div className="flex flex-wrap gap-2">
+                    <Button
+                        variant="outline"
+                        type="button"
+                        onClick={() =>
+                            setShowCatalogManager((visible) => !visible)
+                        }
                     >
-                        <Input
-                            value={repositoryUrl}
-                            onChange={(event) =>
-                                setRepositoryUrl(event.target.value)
+                        <Settings2 className="h-4 w-4" />
+                        {showCatalogManager ? 'Hide catalog tools' : 'Add apps'}
+                    </Button>
+                    <Button
+                        variant="outline"
+                        type="button"
+                        disabled={loading}
+                        onClick={() => void loadCatalog()}
+                    >
+                        <RefreshCw
+                            className={
+                                loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'
                             }
-                            placeholder="https://oneclick-apps.example.com"
-                        />
-                        <Button type="submit" disabled={working}>
-                            <Plus className="h-4 w-4" /> Add repository
-                        </Button>
-                    </form>
-                    {repositories.map((url) => (
-                        <div
-                            key={url}
-                            className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm"
+                        />{' '}
+                        Refresh
+                    </Button>
+                </div>
+            </div>
+
+            {showCatalogManager && (
+                <Card className="border-primary/20 bg-primary/[0.03]">
+                    <CardHeader>
+                        <CardTitle className="text-xl">
+                            Add apps to the catalog
+                        </CardTitle>
+                        <p className="text-sm text-muted-foreground">
+                            Connect a v4 one-click repository or create a custom
+                            template. Sources are stored in CapRover and appear
+                            in the catalog after refresh.
+                        </p>
+                    </CardHeader>
+                    <CardContent className="space-y-5">
+                        <form
+                            className="flex flex-col gap-2 lg:flex-row"
+                            onSubmit={addRepository}
                         >
-                            <a
-                                href={url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="truncate text-primary hover:underline"
+                            <div className="flex-1">
+                                <Label htmlFor="oneclick-repository-url">
+                                    Repository URL
+                                </Label>
+                                <Input
+                                    id="oneclick-repository-url"
+                                    className="mt-2"
+                                    type="url"
+                                    value={repositoryUrl}
+                                    onChange={(event) =>
+                                        setRepositoryUrl(event.target.value)
+                                    }
+                                    placeholder="https://oneclick-apps.example.com"
+                                    required
+                                />
+                            </div>
+                            <div className="flex items-end">
+                                <Button type="submit" disabled={working}>
+                                    <Plus className="h-4 w-4" /> Add repository
+                                </Button>
+                            </div>
+                        </form>
+                        <div className="flex flex-wrap gap-2 border-t pt-4">
+                            <Link
+                                href="/apps/oneclick/templategenerator"
+                                className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
                             >
-                                {url}
-                            </a>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                type="button"
-                                onClick={() => void deleteRepository(url)}
-                                aria-label={`Delete ${url}`}
+                                <Plus className="h-4 w-4" /> Create custom app
+                            </Link>
+                            <Link
+                                href="/apps/dockercompose"
+                                className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
                             >
-                                <Trash2 className="h-4 w-4" />
-                            </Button>
+                                Import Docker Compose
+                            </Link>
                         </div>
-                    ))}
+                        <div className="space-y-2 border-t pt-4">
+                            <p className="text-sm font-medium">
+                                Connected community sources
+                            </p>
+                            {repositories.length ? (
+                                repositories.map((url) => (
+                                    <div
+                                        key={url}
+                                        className="flex items-center justify-between gap-3 rounded-lg border bg-background p-3 text-sm"
+                                    >
+                                        <a
+                                            href={url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="truncate text-primary hover:underline"
+                                        >
+                                            {url}
+                                        </a>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            type="button"
+                                            disabled={working}
+                                            onClick={() =>
+                                                void deleteRepository(url)
+                                            }
+                                            aria-label={`Delete ${url}`}
+                                        >
+                                            <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                    </div>
+                                ))
+                            ) : (
+                                <p className="rounded-lg border border-dashed bg-background p-3 text-sm text-muted-foreground">
+                                    No community repositories configured yet.
+                                </p>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            <Card>
+                <CardContent className="space-y-4 p-4 sm:p-5">
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(150px,1fr)_minmax(150px,1fr)_minmax(130px,0.8fr)]">
+                        <div className="relative">
+                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                            <Input
+                                value={searchTerm}
+                                onChange={(event) =>
+                                    setSearchTerm(event.target.value)
+                                }
+                                className="pl-9 pr-9"
+                                placeholder="Search by name, description, tag or source"
+                                aria-label="Search one-click apps"
+                            />
+                            {searchTerm && (
+                                <button
+                                    type="button"
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                    onClick={() => setSearchTerm('')}
+                                    aria-label="Clear app search"
+                                >
+                                    <X className="h-4 w-4" />
+                                </button>
+                            )}
+                        </div>
+                        <Select
+                            value={sourceFilter}
+                            onChange={(event) =>
+                                setSourceFilter(event.target.value)
+                            }
+                            aria-label="Filter by source"
+                        >
+                            <option value="all">All sources</option>
+                            {availableSources.map(([url, label]) => (
+                                <option key={url} value={url}>
+                                    {label}
+                                </option>
+                            ))}
+                        </Select>
+                        <Select
+                            value={tagFilter}
+                            onChange={(event) =>
+                                setTagFilter(event.target.value)
+                            }
+                            aria-label="Filter by tag"
+                        >
+                            <option value="all">All tags</option>
+                            {availableTags.map((tag) => (
+                                <option key={tag} value={tag}>
+                                    {tag}
+                                </option>
+                            ))}
+                        </Select>
+                        <Select
+                            value={sortOrder}
+                            onChange={(event) =>
+                                setSortOrder(
+                                    event.target.value as 'relevance' | 'name'
+                                )
+                            }
+                            aria-label="Sort apps"
+                        >
+                            <option value="relevance">Best match</option>
+                            <option value="name">Name A–Z</option>
+                        </Select>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                        <p className="text-muted-foreground">
+                            Showing{' '}
+                            <span className="font-medium text-foreground">
+                                {filteredApps.length}
+                            </span>{' '}
+                            of {apps.length} apps
+                        </p>
+                        {(searchTerm ||
+                            sourceFilter !== 'all' ||
+                            tagFilter !== 'all') && (
+                            <Button
+                                variant="link"
+                                size="sm"
+                                type="button"
+                                onClick={() => {
+                                    setSearchTerm('')
+                                    setSourceFilter('all')
+                                    setTagFilter('all')
+                                }}
+                            >
+                                Clear filters
+                            </Button>
+                        )}
+                    </div>
                 </CardContent>
             </Card>
             {loading ? (
@@ -707,37 +1021,96 @@ export function OneClickWorkspace({
                 </Card>
             ) : (
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {apps.map((app) => (
+                    {filteredApps.map((app) => (
                         <button
                             key={`${app.baseUrl}-${app.name}`}
                             type="button"
-                            className="rounded-xl border bg-card p-5 text-left transition-colors hover:border-primary/50 hover:shadow-sm"
+                            className="group rounded-xl border bg-card p-5 text-left transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
                             onClick={() => void selectApp(app)}
                         >
-                            <div className="flex items-center justify-between gap-2">
-                                <Badge>
-                                    {app.isOfficial ? 'Official' : 'Community'}
-                                </Badge>
-                                <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex min-w-0 items-center gap-3">
+                                    {app.logoUrl ? (
+                                        <img
+                                            src={app.logoUrl}
+                                            alt=""
+                                            loading="lazy"
+                                            className="h-12 w-12 rounded-xl border bg-background object-contain p-1"
+                                        />
+                                    ) : (
+                                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-lg font-semibold text-primary">
+                                            {app.displayName
+                                                .slice(0, 1)
+                                                .toUpperCase()}
+                                        </div>
+                                    )}
+                                    <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <Badge
+                                                className={
+                                                    app.isOfficial
+                                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                        : 'border-sky-200 bg-sky-50 text-sky-700'
+                                                }
+                                            >
+                                                {app.isOfficial
+                                                    ? 'Official'
+                                                    : 'Community'}
+                                            </Badge>
+                                        </div>
+                                        <p className="mt-1 truncate text-xs text-muted-foreground">
+                                            {getSourceLabel(app)}
+                                        </p>
+                                    </div>
+                                </div>
+                                <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
                             </div>
-                            <h2 className="mt-4 text-lg font-semibold">
+                            <h2 className="mt-5 text-lg font-semibold">
                                 {app.displayName}
                             </h2>
-                            <p className="mt-2 line-clamp-4 text-sm text-muted-foreground">
-                                {app.description}
+                            <p className="mt-2 line-clamp-3 min-h-[4.5rem] text-sm leading-6 text-muted-foreground">
+                                {app.description || 'No description provided.'}
                             </p>
-                            <p className="mt-4 truncate text-xs text-muted-foreground">
-                                {app.baseUrl}
+                            <div className="mt-4 flex min-h-6 flex-wrap gap-1.5">
+                                {getAppTags(app).map((tag) => (
+                                    <Badge
+                                        key={tag}
+                                        className="border-muted-foreground/20 bg-muted/50 text-muted-foreground"
+                                    >
+                                        {tag}
+                                    </Badge>
+                                ))}
+                            </div>
+                            <p className="mt-4 text-xs font-medium text-primary">
+                                Review template and deploy →
                             </p>
                         </button>
                     ))}
                 </div>
             )}
-            {!loading && !apps.length && (
+            {!loading && !filteredApps.length && (
                 <Card>
-                    <CardContent className="py-10 text-center text-sm text-muted-foreground">
-                        No one-click apps were returned. Check repositories or
-                        try again.
+                    <CardContent className="space-y-3 py-10 text-center text-sm text-muted-foreground">
+                        <p>
+                            {apps.length
+                                ? 'No apps match the current search and filters.'
+                                : 'No one-click apps were returned. Add a repository or try again.'}
+                        </p>
+                        {(searchTerm ||
+                            sourceFilter !== 'all' ||
+                            tagFilter !== 'all') && (
+                            <Button
+                                variant="outline"
+                                type="button"
+                                onClick={() => {
+                                    setSearchTerm('')
+                                    setSourceFilter('all')
+                                    setTagFilter('all')
+                                }}
+                            >
+                                Clear filters
+                            </Button>
+                        )}
                     </CardContent>
                 </Card>
             )}

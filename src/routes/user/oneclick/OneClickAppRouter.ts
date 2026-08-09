@@ -29,6 +29,22 @@ interface IOneClickAppIdentifier {
     displayName: string
     description: string
     logoUrl: string
+    tags: string[]
+}
+
+export function normalizeOneClickTags(value: unknown): string[] {
+    const rawTags = Array.isArray(value) ? value : value ? [value] : []
+
+    return Array.from(
+        new Set(
+            rawTags
+                .filter((tag): tag is string => typeof tag === 'string')
+                .flatMap((tag) => tag.split(','))
+                .map((tag) => tag.trim())
+                .filter(Boolean)
+                .map((tag) => tag.slice(0, 40))
+        )
+    ).slice(0, 12)
 }
 
 router.post('/repositories/insert', function (req, res, next) {
@@ -183,6 +199,11 @@ router.get('/template/list', function (req, res, next) {
                                         element.logoUrl.startsWith('https://'))
                                         ? element.logoUrl
                                         : `${apiBaseUrl}/${VERSION}/logos/${element.logoUrl}`,
+                                tags: normalizeOneClickTags(
+                                    element.tags ||
+                                        element.categories ||
+                                        element.category
+                                ),
                             }
                             return ret
                         })

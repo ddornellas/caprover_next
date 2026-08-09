@@ -40,36 +40,7 @@ router.post('/keys/', function (req, res, next) {
     const user = getUser(res)
     const input = req.body || {}
 
-    return Promise.resolve()
-        .then(function () {
-            const requestedAppNames = input.appNames
-            if (!Array.isArray(requestedAppNames)) {
-                throw ApiStatusCodes.createError(
-                    ApiStatusCodes.ILLEGAL_PARAMETER,
-                    'appNames is required'
-                )
-            }
-
-            return user.dataStore
-                .getAppsDataStore()
-                .getAppDefinitions()
-                .then(function (apps) {
-                    const missingApp = requestedAppNames.find(
-                        (appName: unknown) =>
-                            typeof appName !== 'string' ||
-                            !Object.prototype.hasOwnProperty.call(apps, appName)
-                    )
-                    if (missingApp !== undefined) {
-                        throw ApiStatusCodes.createError(
-                            ApiStatusCodes.ILLEGAL_PARAMETER,
-                            `Cannot scope key to unknown app: ${missingApp}`
-                        )
-                    }
-                })
-        })
-        .then(function () {
-            return createAgentKey(user.dataStore, input)
-        })
+    return createAgentKey(user.dataStore, input)
         .then(function (created) {
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,

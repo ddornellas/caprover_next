@@ -105,6 +105,53 @@ describe('service and volume naming migration', () => {
         )
     })
 
+    test('exposes app status and pending agent-created apps', async () => {
+        const dataStore = {
+            getAppsDataStore: () => ({
+                getAppDefinitions: jest.fn().mockResolvedValue({
+                    publishedApp: createAppDefinition(),
+                    pausedApp: createAppDefinition({ instanceCount: 0 }),
+                }),
+            }),
+            getAgentDeploymentRequests: jest.fn().mockResolvedValue([
+                {
+                    id: 'agent_deploy_new-app',
+                    appName: 'new-app',
+                    isNewApp: true,
+                    description: 'Waiting for approval',
+                    status: 'pending',
+                    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+            ]),
+            getDefaultAppNginxConfig: jest.fn().mockResolvedValue(''),
+            getRootDomain: jest.fn().mockReturnValue('example.com'),
+        } as any
+        const serviceManager = {
+            isAppBuilding: jest.fn().mockReturnValue(false),
+        } as any
+
+        const result = await getAllAppDefinitions(dataStore, serviceManager)
+
+        expect(result.data.appDefinitions).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    appName: 'publishedApp',
+                    status: 'published',
+                }),
+                expect.objectContaining({
+                    appName: 'pausedApp',
+                    status: 'paused',
+                }),
+                expect.objectContaining({
+                    appName: 'new-app',
+                    status: 'on_approval',
+                    isAgentPending: true,
+                    description: 'Waiting for approval',
+                }),
+            ])
+        )
+    })
+
     test('does not let saves override the legacy app name flag', async () => {
         const storedApp = createAppDefinition({ isLegacyAppName: true })
         const data = {

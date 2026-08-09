@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'crypto'
 import { v4 as uuid } from 'uuid'
 
 import ApiStatusCodes from '../../api/ApiStatusCodes'
+import { registerAppDefinition } from '../../handlers/users/apps/appdefinition/AppDefinitionHandler'
 import { uploadCaptainDefinitionContent } from '../../handlers/users/apps/appdata/AppDataHandler'
 import {
     AgentDeploymentRequest,
@@ -12,6 +13,7 @@ import {
 } from '../../models/AgentAccess'
 import { ICaptainDefinition } from '../../models/ICaptainDefinition'
 import type ServiceManager from '../ServiceManager'
+import type DataStore from '../../datastore/DataStore'
 import Logger from '../../utils/Logger'
 
 const AGENT_KEY_PREFIX = 'cr_agent_'
@@ -38,6 +40,8 @@ export interface CreateAgentDeploymentInput {
     appName: unknown
     captainDefinition: unknown
     gitHash?: unknown
+    createApp?: unknown
+    description?: unknown
 }
 
 function nowIso() {
@@ -330,7 +334,42 @@ function normalizeDeploymentInput(input: CreateAgentDeploymentInput) {
     if (!appName || appName.length > 50) {
         return error(
             ApiStatusCodes.ILLEGAL_PARAMETER,
-            'appName must be a valid existing app name'
+            'appName must be a valid app name'
+        )
+    }
+
+    const createApp =
+        input.createApp === undefined ? false : input.createApp === true
+    if (input.createApp !== undefined && typeof input.createApp !== 'boolean') {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'createApp must be a boolean'
+        )
+    }
+
+    const description =
+        input.description === undefined || input.description === null
+            ? undefined
+            : typeof input.description === 'string'
+              ? input.description.trim()
+              : error(
+                    ApiStatusCodes.ILLEGAL_PARAMETER,
+                    'description must be a string'
+                )
+    if (
+        description &&
+        (description.length > 500 || /[\r\n]/.test(description))
+    ) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'description is too long or contains a line break'
+        )
+    }
+
+    if (description && !createApp) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'description can only be used when createApp is true'
         )
     }
 
@@ -353,6 +392,8 @@ function normalizeDeploymentInput(input: CreateAgentDeploymentInput) {
 
     return {
         appName,
+        createApp,
+        description: description || undefined,
         captainDefinition: sanitizeCaptainDefinition(input.captainDefinition),
         gitHash: gitHash || undefined,
     }
@@ -374,6 +415,8 @@ export async function createAgentDeploymentRequest(
         'appName',
         'captainDefinition',
         'gitHash',
+        'createApp',
+        'description',
     ])
     const unexpectedInputKey = Object.keys(input).find(
         (key) => !allowedInputKeys.has(key)
@@ -396,6 +439,23 @@ export async function createAgentDeploymentRequest(
     const normalized = normalizeDeploymentInput(input)
     assertAgentAppScope(record, normalized.appName)
 
+    if (normalized.createApp) {
+        const requests = await store.getAgentDeploymentRequests()
+        const alreadyPending = requests.some(
+            (request) =>
+                request.isNewApp &&
+                request.appName === normalized.appName &&
+                request.status === 'pending' &&
+                Date.parse(request.expiresAt) > Date.now()
+        )
+        if (alreadyPending) {
+            return error(
+                ApiStatusCodes.STATUS_ERROR_ALREADY_EXIST,
+                `An approval request already exists for app: ${normalized.appName}`
+            )
+        }
+    }
+
     const createdAt = nowIso()
     const request: AgentDeploymentRequest = {
         id: `agent_deploy_${uuid()}`,
@@ -403,6 +463,8 @@ export async function createAgentDeploymentRequest(
         agentKeyName: record.name,
         role: record.role,
         appName: normalized.appName,
+        isNewApp: normalized.createApp,
+        description: normalized.description,
         captainDefinition: normalized.captainDefinition,
         gitHash: normalized.gitHash,
         status: 'pending',
@@ -427,6 +489,8 @@ export function getAgentDeploymentStatusForResponse(
         agentKeyName: request.agentKeyName,
         role: request.role,
         appName: request.appName,
+        isNewApp: request.isNewApp,
+        description: request.description,
         captainDefinition: request.captainDefinition,
         gitHash: request.gitHash,
         status: request.status,
@@ -537,7 +601,7 @@ export async function rejectAgentDeployment(
 }
 
 export async function runAgentDeployment(
-    store: AgentAccessStore,
+    store: DataStore & AgentAccessStore,
     serviceManager: ServiceManager,
     requestId: string
 ) {
@@ -545,6 +609,27 @@ export async function runAgentDeployment(
     if (request.status !== 'running') return request
 
     try {
+        if (request.isNewApp) {
+            const apps = await store.getAppsDataStore().getAppDefinitions()
+            if (Object.prototype.hasOwnProperty.call(apps, request.appName)) {
+                throw ApiStatusCodes.createError(
+                    ApiStatusCodes.STATUS_ERROR_ALREADY_EXIST,
+                    `App already exists: ${request.appName}`
+                )
+            }
+
+            await registerAppDefinition(
+                {
+                    appName: request.appName,
+                    projectId: '',
+                    hasPersistentData: false,
+                    isDetachedBuild: true,
+                },
+                store,
+                serviceManager
+            )
+        }
+
         await uploadCaptainDefinitionContent(
             {
                 appName: request.appName,

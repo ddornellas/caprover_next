@@ -8,8 +8,9 @@ and compatible with the existing API v2 contracts.
 ### Restore One-Click Apps in the Next frontend
 
 - Put One-Click Apps back in the primary navigation.
-- Verify the catalog, custom repository, template review, variable handling,
-  deployment progress, and Docker Compose conversion flows end to end.
+- Add catalog search, source and tag filters, relevance sorting, custom
+  repositories, template review, variable handling, deployment progress, and
+  Docker Compose conversion flows.
 - Keep the existing one-click managers and API response shapes as the source of
   truth.
 
@@ -27,7 +28,8 @@ password or SSH access to the host.
   - `deploy`: execute the approved deployment operations allowed by the key
     scope.
 - Scope every key to an explicit app allowlist. Deny access by default when an
-  app is not in the allowlist.
+  app is not in the allowlist; allow an exact future app name for a creation
+  request without granting a wildcard.
 - Keep agent operations allowlisted and deployment-focused: no Docker socket,
   Swarm administration, root settings, app deletion, app renaming, volume
   deletion, registry management, or arbitrary server-side commands.
@@ -35,6 +37,8 @@ password or SSH access to the host.
   approval UI must show the target app, requested changes, actor, and outcome.
 - Reuse existing managers and ownership checks so an agent cannot mutate a
   resource that CapRover does not own or that is outside its scope.
+- Surface agent-created apps in **Apps** with `published`, `on_approval`, and
+  `paused` states; only a `deploy` key may bypass the approval state.
 
 ### App logs with Dozzle
 

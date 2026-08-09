@@ -59,6 +59,9 @@ export interface IAppTag {
     tagName: string
 }
 
+export const APP_STATUSES = ['published', 'on_approval', 'paused'] as const
+export type AppStatus = (typeof APP_STATUSES)[number]
+
 export interface IAppDefinitionBase {
     projectId?: string | undefined
     description: string
@@ -110,6 +113,9 @@ export interface IAppDef extends IAppDefinitionBase {
     httpAuth?: IHttpAuth
     appName?: string
     isAppBuilding?: boolean
+    status?: AppStatus
+    isAgentPending?: boolean
+    agentDeploymentRequestId?: string
 }
 
 export interface IAppDefSaved extends IAppDefinitionBase {

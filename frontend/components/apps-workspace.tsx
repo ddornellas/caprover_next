@@ -12,7 +12,11 @@ import Link from 'next/link'
 import { useMemo, useState } from 'react'
 
 import { clientApiRequest, CaptainApiError } from '@/lib/api-client'
-import type { AppDefinition, ProjectDefinition } from '@/lib/caprover-types'
+import type {
+    AppDefinition,
+    AppStatus,
+    ProjectDefinition,
+} from '@/lib/caprover-types'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -46,6 +50,27 @@ function appBelongsToProject(app: AppDefinition, projectId: string) {
     return (app.projectId || '') === projectId
 }
 
+function getAppStatus(app: AppDefinition): AppStatus {
+    if (app.status) return app.status
+    return Number(app.instanceCount) === 0 ? 'paused' : 'published'
+}
+
+function getAppStatusLabel(status: AppStatus) {
+    if (status === 'on_approval') return 'On approval'
+    if (status === 'paused') return 'Paused'
+    return 'Published'
+}
+
+function getAppStatusClassName(status: AppStatus) {
+    if (status === 'on_approval') {
+        return 'border-amber-300 bg-amber-50 text-amber-700'
+    }
+    if (status === 'paused') {
+        return 'border-slate-300 bg-slate-100 text-slate-600'
+    }
+    return 'border-emerald-300 bg-emerald-50 text-emerald-700'
+}
+
 export function AppsWorkspace({
     apps: initialApps,
     projects: initialProjects,
@@ -56,6 +81,7 @@ export function AppsWorkspace({
     const [apps] = useState(initialApps)
     const [projects] = useState(initialProjects)
     const [search, setSearch] = useState('')
+    const [statusFilter, setStatusFilter] = useState<'all' | AppStatus>('all')
     const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId)
     const [notice, setNotice] = useState<Notice | undefined>()
     const [working, setWorking] = useState(false)
@@ -74,6 +100,10 @@ export function AppsWorkspace({
         const tagQuery = query.startsWith('tag:') ? query.slice(4).trim() : ''
 
         return apps.filter((app) => {
+            if (statusFilter !== 'all' && getAppStatus(app) !== statusFilter) {
+                return false
+            }
+
             if (
                 selectedProjectId &&
                 !appBelongsToProject(app, selectedProjectId)
@@ -98,7 +128,7 @@ export function AppsWorkspace({
                   )
                 : searchable.includes(query)
         })
-    }, [apps, search, selectedProjectId])
+    }, [apps, search, selectedProjectId, statusFilter])
 
     const deleteCandidateVolumes = (deleteCandidate?.volumes || [])
         .map((volume) => volume.volumeName)
@@ -592,16 +622,33 @@ export function AppsWorkspace({
                                 {visibleApps.length} of {apps.length} apps
                             </p>
                         </div>
-                        <div className="relative w-full sm:max-w-xs">
-                            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                            <Input
-                                className="pl-9"
-                                value={search}
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                            <Select
+                                className="w-full sm:w-40"
+                                value={statusFilter}
                                 onChange={(event) =>
-                                    setSearch(event.target.value)
+                                    setStatusFilter(
+                                        event.target.value as 'all' | AppStatus
+                                    )
                                 }
-                                placeholder="Search apps or tag:name"
-                            />
+                                aria-label="Filter apps by status"
+                            >
+                                <option value="all">All statuses</option>
+                                <option value="published">Published</option>
+                                <option value="on_approval">On approval</option>
+                                <option value="paused">Paused</option>
+                            </Select>
+                            <div className="relative w-full sm:w-64">
+                                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                <Input
+                                    className="pl-9"
+                                    value={search}
+                                    onChange={(event) =>
+                                        setSearch(event.target.value)
+                                    }
+                                    placeholder="Search apps or tag:name"
+                                />
+                            </div>
                         </div>
                     </CardHeader>
                     <CardContent>
@@ -614,76 +661,116 @@ export function AppsWorkspace({
                             </div>
                         ) : (
                             <div className="space-y-3">
-                                {visibleApps.map((app) => (
-                                    <div
-                                        key={app.appName}
-                                        className="flex flex-col gap-4 rounded-xl border p-4 transition-colors hover:border-primary/40 sm:flex-row sm:items-center sm:justify-between"
-                                    >
-                                        <div className="min-w-0">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <Link
-                                                    href={`/apps/details/${encodeURIComponent(app.appName || '')}`}
-                                                    className="truncate font-medium text-primary hover:underline"
-                                                >
-                                                    {app.appName}
-                                                </Link>
-                                                {app.isAppBuilding && (
-                                                    <Badge className="border-amber-300 bg-amber-50 text-amber-700">
-                                                        Building
-                                                    </Badge>
-                                                )}
-                                                {app.hasPersistentData && (
-                                                    <Badge>Persistent</Badge>
-                                                )}
-                                            </div>
-                                            <p className="mt-1 truncate text-sm text-muted-foreground">
-                                                {app.description ||
-                                                    'No description'}
-                                            </p>
-                                            <div className="mt-2 flex flex-wrap gap-1">
-                                                {(app.tags || []).map((tag) => (
+                                {visibleApps.map((app) => {
+                                    const status = getAppStatus(app)
+                                    return (
+                                        <div
+                                            key={app.appName}
+                                            className="flex flex-col gap-4 rounded-xl border p-4 transition-colors hover:border-primary/40 sm:flex-row sm:items-center sm:justify-between"
+                                        >
+                                            <div className="min-w-0">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    {status ===
+                                                    'on_approval' ? (
+                                                        <span className="truncate font-medium">
+                                                            {app.appName}
+                                                        </span>
+                                                    ) : (
+                                                        <Link
+                                                            href={`/apps/details/${encodeURIComponent(app.appName || '')}`}
+                                                            className="truncate font-medium text-primary hover:underline"
+                                                        >
+                                                            {app.appName}
+                                                        </Link>
+                                                    )}
                                                     <Badge
-                                                        key={tag.tagName}
-                                                        className="text-[11px]"
+                                                        className={getAppStatusClassName(
+                                                            status
+                                                        )}
                                                     >
-                                                        {tag.tagName}
+                                                        {getAppStatusLabel(
+                                                            status
+                                                        )}
                                                     </Badge>
-                                                ))}
+                                                    {app.isAppBuilding && (
+                                                        <Badge className="border-amber-300 bg-amber-50 text-amber-700">
+                                                            Building
+                                                        </Badge>
+                                                    )}
+                                                    {app.hasPersistentData && (
+                                                        <Badge>
+                                                            Persistent
+                                                        </Badge>
+                                                    )}
+                                                </div>
+                                                <p className="mt-1 truncate text-sm text-muted-foreground">
+                                                    {app.description ||
+                                                        'No description'}
+                                                </p>
+                                                <div className="mt-2 flex flex-wrap gap-1">
+                                                    {(app.tags || []).map(
+                                                        (tag) => (
+                                                            <Badge
+                                                                key={
+                                                                    tag.tagName
+                                                                }
+                                                                className="text-[11px]"
+                                                            >
+                                                                {tag.tagName}
+                                                            </Badge>
+                                                        )
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <div className="flex shrink-0 items-center gap-4 text-sm text-muted-foreground">
+                                                {status === 'on_approval' ? (
+                                                    <span>
+                                                        Waiting for approval
+                                                    </span>
+                                                ) : (
+                                                    <>
+                                                        <span>
+                                                            {app.instanceCount}{' '}
+                                                            instance
+                                                            {app.instanceCount ===
+                                                            1
+                                                                ? ''
+                                                                : 's'}
+                                                        </span>
+                                                        <span>
+                                                            v
+                                                            {app.deployedVersion ||
+                                                                0}
+                                                        </span>
+                                                    </>
+                                                )}
+                                                {status === 'published' &&
+                                                !app.notExposeAsWebApp ? (
+                                                    <a
+                                                        className="text-primary hover:underline"
+                                                        href={`https://${app.appName}.${rootDomain}`}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                    >
+                                                        Open
+                                                    </a>
+                                                ) : null}
+                                                {status !== 'on_approval' && (
+                                                    <button
+                                                        type="button"
+                                                        aria-label={`Delete ${app.appName}`}
+                                                        className="rounded p-2 hover:bg-destructive/10 hover:text-destructive"
+                                                        onClick={() =>
+                                                            beginDeleteApp(app)
+                                                        }
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
-                                        <div className="flex shrink-0 items-center gap-4 text-sm text-muted-foreground">
-                                            <span>
-                                                {app.instanceCount} instance
-                                                {app.instanceCount === 1
-                                                    ? ''
-                                                    : 's'}
-                                            </span>
-                                            <span>
-                                                v{app.deployedVersion || 0}
-                                            </span>
-                                            {app.notExposeAsWebApp ? null : (
-                                                <a
-                                                    className="text-primary hover:underline"
-                                                    href={`https://${app.appName}.${rootDomain}`}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                >
-                                                    Open
-                                                </a>
-                                            )}
-                                            <button
-                                                type="button"
-                                                aria-label={`Delete ${app.appName}`}
-                                                className="rounded p-2 hover:bg-destructive/10 hover:text-destructive"
-                                                onClick={() =>
-                                                    beginDeleteApp(app)
-                                                }
-                                            >
-                                                <Trash2 className="h-4 w-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
+                                    )
+                                })}
                             </div>
                         )}
                     </CardContent>

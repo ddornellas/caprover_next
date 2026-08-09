@@ -174,4 +174,37 @@ describe('agent access', () => {
             } as never)
         ).rejects.toThrow('Deployment field is not allowed: role')
     })
+
+    test('allows a scoped new app request and prevents duplicate pending apps', async () => {
+        const store = new MemoryAgentStore()
+        const created = await createAgentKey(store, {
+            name: 'new app approval bot',
+            role: 'deploy_approval',
+            appNames: ['new-api'],
+        })
+        const key = await authenticateAgentApiKey(store, created.apiKey)
+
+        const request = await createAgentDeploymentRequest(store, key!, {
+            appName: 'new-api',
+            createApp: true,
+            description: 'Created by an automation agent',
+            captainDefinition: {
+                schemaVersion: 2,
+                imageName: 'registry.example/new-api:latest',
+            },
+        })
+
+        expect(request.isNewApp).toBe(true)
+        expect(request.description).toBe('Created by an automation agent')
+        await expect(
+            createAgentDeploymentRequest(store, key!, {
+                appName: 'new-api',
+                createApp: true,
+                captainDefinition: {
+                    schemaVersion: 2,
+                    imageName: 'registry.example/new-api:latest',
+                },
+            })
+        ).rejects.toThrow('approval request already exists')
+    })
 })

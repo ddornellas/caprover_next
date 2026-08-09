@@ -16,6 +16,7 @@ import {
 import CaptainConstants from '../../utils/CaptainConstants'
 import Logger from '../../utils/Logger'
 import { AgentKeyRecord } from '../../models/AgentAccess'
+import type { AppStatus } from '../../models/AppDefinition'
 
 const router = express.Router()
 
@@ -34,6 +35,12 @@ function sendAgentError(
 ) {
     res.status(statusCode).send(
         new BaseApi(ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED, message)
+    )
+}
+
+function getAppStatus(app: { status?: AppStatus; instanceCount?: number }) {
+    return (
+        app.status || (Number(app.instanceCount) === 0 ? 'paused' : 'published')
     )
 }
 
@@ -107,6 +114,7 @@ router.get('/apps', function (req, res, next) {
                         description: app.description,
                         deployedVersion,
                         deployedAt: deployedVersionInfo?.timeStamp,
+                        status: getAppStatus(app),
                         isBuilding:
                             userManager.serviceManager.isAppBuilding(appName),
                         notExposeAsWebApp: !!app.notExposeAsWebApp,
@@ -155,6 +163,7 @@ router.get('/apps/:appName', function (req, res, next) {
                     description: app.description,
                     deployedVersion,
                     deployedAt: deployedVersionInfo?.timeStamp,
+                    status: getAppStatus(app),
                     isBuilding:
                         userManager.serviceManager.isAppBuilding(appName),
                     notExposeAsWebApp: !!app.notExposeAsWebApp,
@@ -208,9 +217,38 @@ router.post('/deployments', function (req, res, next) {
     return Promise.resolve()
         .then(function () {
             assertAgentAppScope(key, appName)
+            const requestedCreateApp = req.body?.createApp
+            if (
+                requestedCreateApp !== undefined &&
+                typeof requestedCreateApp !== 'boolean'
+            ) {
+                throw ApiStatusCodes.createError(
+                    ApiStatusCodes.ILLEGAL_PARAMETER,
+                    'createApp must be a boolean'
+                )
+            }
+            const createApp = requestedCreateApp === true
             return userManager.datastore
                 .getAppsDataStore()
-                .getAppDefinition(appName)
+                .getAppDefinitions()
+                .then(function (apps) {
+                    const appExists = Object.prototype.hasOwnProperty.call(
+                        apps,
+                        appName
+                    )
+                    if (createApp && appExists) {
+                        throw ApiStatusCodes.createError(
+                            ApiStatusCodes.STATUS_ERROR_ALREADY_EXIST,
+                            `App already exists: ${appName}`
+                        )
+                    }
+                    if (!createApp && !appExists) {
+                        throw ApiStatusCodes.createError(
+                            ApiStatusCodes.NOT_FOUND,
+                            `App does not exist: ${appName}. Set createApp to true to create it.`
+                        )
+                    }
+                })
         })
         .then(function () {
             return createAgentDeploymentRequest(

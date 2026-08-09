@@ -52,7 +52,10 @@ jest.mock('../src/user/events/ICapRoverEvent', () => ({
     },
 }))
 
-import { reportAnalyticsOnAppDeploy } from '../src/routes/user/oneclick/OneClickAppRouter'
+import {
+    normalizeOneClickTags,
+    reportAnalyticsOnAppDeploy,
+} from '../src/routes/user/oneclick/OneClickAppRouter'
 import { EventLogger } from '../src/user/events/EventLogger'
 import {
     CapRoverEventFactory,
@@ -444,5 +447,26 @@ describe('reportAnalyticsOnAppDeploy', () => {
                 }
             )
         })
+    })
+})
+
+describe('normalizeOneClickTags', () => {
+    test('keeps clean unique tags and caps each catalog entry', () => {
+        expect(
+            normalizeOneClickTags([
+                ' database ',
+                'database',
+                '',
+                'a'.repeat(60),
+                'Monitoring',
+            ])
+        ).toEqual(['database', 'a'.repeat(40), 'Monitoring'])
+    })
+
+    test('accepts a single category and ignores non-string values', () => {
+        expect(normalizeOneClickTags('Web')).toEqual(['Web'])
+        expect(normalizeOneClickTags('Web, API')).toEqual(['Web', 'API'])
+        expect(normalizeOneClickTags([42, null])).toEqual([])
+        expect(normalizeOneClickTags(undefined)).toEqual([])
     })
 })
