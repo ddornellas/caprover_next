@@ -11,6 +11,7 @@ import {
 import CapRoverTheme from '../models/CapRoverTheme'
 import { GoAccessInfo } from '../models/GoAccessInfo'
 import { NetDataInfo } from '../models/NetDataInfo'
+import { AgentDeploymentRequest, AgentKeyRecord } from '../models/AgentAccess'
 import CaptainConstants from '../utils/CaptainConstants'
 import CaptainEncryptor from '../utils/Encryptor'
 import Utils from '../utils/Utils'
@@ -36,6 +37,8 @@ const FEATURE_FLAGS = 'featureFlags'
 const AUTOMATED_CLEANUP = 'automatedCleanup'
 const THEMES = 'themes'
 const CURRENT_THEME = 'currentTheme'
+const AGENT_KEYS = 'agentKeys'
+const AGENT_DEPLOYMENT_REQUESTS = 'agentDeploymentRequests'
 
 const DEFAULT_CAPTAIN_ROOT_DOMAIN = 'captain.localhost'
 
@@ -413,6 +416,31 @@ class DataStore {
         return Promise.resolve().then(function () {
             self.data.set(NGINX_BASE_CONFIG, baseConfig)
             self.data.set(NGINX_CAPTAIN_CONFIG, captainConfig)
+        })
+    }
+
+    getAgentKeys(): Promise<AgentKeyRecord[]> {
+        return Promise.resolve(
+            (this.data.get(AGENT_KEYS) || []) as AgentKeyRecord[]
+        )
+    }
+
+    setAgentKeys(agentKeys: AgentKeyRecord[]) {
+        return Promise.resolve().then(() => {
+            this.data.set(AGENT_KEYS, agentKeys)
+        })
+    }
+
+    getAgentDeploymentRequests(): Promise<AgentDeploymentRequest[]> {
+        return Promise.resolve(
+            (this.data.get(AGENT_DEPLOYMENT_REQUESTS) ||
+                []) as AgentDeploymentRequest[]
+        )
+    }
+
+    setAgentDeploymentRequests(requests: AgentDeploymentRequest[]) {
+        return Promise.resolve().then(() => {
+            this.data.set(AGENT_DEPLOYMENT_REQUESTS, requests)
         })
     }
 

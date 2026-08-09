@@ -16,6 +16,7 @@ import DownloadRouter from './routes/download/DownloadRouter'
 import LoginRouter from './routes/login/LoginRouter'
 import ThemePublicRouter from './routes/public/ThemePublicRouter'
 import UserRouter from './routes/user/UserRouter'
+import AgentRouter from './routes/agent/AgentRouter'
 import CaptainManager from './user/system/CaptainManager'
 import CaptainConstants from './utils/CaptainConstants'
 import Logger from './utils/Logger'
@@ -226,6 +227,7 @@ app.use(
     DownloadRouter
 )
 app.use(API_PREFIX + CaptainConstants.apiVersion + '/theme/', ThemePublicRouter)
+app.use(API_PREFIX + CaptainConstants.apiVersion + '/agent/', AgentRouter)
 
 // secured end points
 app.use(API_PREFIX + CaptainConstants.apiVersion + '/user/', UserRouter)

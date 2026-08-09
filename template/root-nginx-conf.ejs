@@ -108,6 +108,12 @@
             proxy_read_timeout 120s;
         }
 
+        error_page 500 502 503 504 /error_generic_catch_all.html;
+        location = /error_generic_catch_all.html {
+            root <%-captain.defaultHtmlDir%>;
+            internal;
+        }
+
         # Used by Lets Encrypt
         location /.well-known/acme-challenge/ {
             root <%-captain.staticWebRoot%>;

@@ -725,8 +725,10 @@ class LoadBalancerManager {
             )
             .then(function () {
                 return ejs.render(defaultPageTemplate, {
-                    message_title: 'Nothing here yet :/',
-                    message_body: '',
+                    message_status: 'No service found',
+                    message_title: 'This address is not serving an app',
+                    message_body:
+                        'This address is not connected to an app yet.',
                     message_link: 'https://caprover.com/',
                     message_link_title: 'Read Docs',
                 })
@@ -741,10 +743,13 @@ class LoadBalancerManager {
             })
             .then(function () {
                 return ejs.render(defaultPageTemplate, {
-                    message_title: 'An Error Occurred :/',
-                    message_body: '',
-                    message_link: 'https://caprover.com/',
-                    message_link_title: 'Read Docs',
+                    message_status: 'Control plane unavailable',
+                    message_title: 'CapRover is taking a short break',
+                    message_body:
+                        'The control plane is restarting or being updated. Try again in a moment.',
+                    message_link:
+                        'https://caprover.com/docs/troubleshooting.html',
+                    message_link_title: 'Troubleshooting',
                 })
             })
             .then(function (errorGenericPageContent) {
@@ -757,12 +762,13 @@ class LoadBalancerManager {
             })
             .then(function () {
                 return ejs.render(defaultPageTemplate, {
-                    message_title: 'NGINX 502 Error :/',
+                    message_status: 'App unavailable',
+                    message_title: 'This app is taking a short break',
                     message_body:
-                        "If you are the developer, check your application's logs. See the link below for details",
+                        'The service is stopped, restarting, or being deployed. Try again in a moment or check the app logs in CapRover.',
                     message_link:
                         'https://caprover.com/docs/troubleshooting.html#successful-deploy-but-502-bad-gateway-error',
-                    message_link_title: 'Docs - 502 Troubleshooting',
+                    message_link_title: 'Troubleshooting',
                 })
             })
             .then(function (error502PageContent) {

@@ -7,6 +7,7 @@ import Authenticator from '../../user/Authenticator'
 import EnvVars from '../../utils/EnvVars'
 import Utils from '../../utils/Utils'
 import AppsRouter from './apps/AppsRouter'
+import AgentAccessRouter from './agents/AgentAccessRouter'
 import OneClickAppRouter from './oneclick/OneClickAppRouter'
 import ProRouter from './pro/ProRouter'
 import ProjectsRouter from './ProjectsRouter'
@@ -125,6 +126,8 @@ router.post('/changepassword/', function (req, res, next) {
 })
 
 router.use('/apps/', AppsRouter)
+
+router.use('/agents/', AgentAccessRouter)
 
 router.use('/projects/', ProjectsRouter)
 

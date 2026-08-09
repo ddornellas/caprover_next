@@ -8,6 +8,7 @@ import {
     LayoutDashboard,
     LogOut,
     Menu,
+    Rocket,
     Settings,
     ShieldCheck,
     SlidersHorizontal,
@@ -28,6 +29,7 @@ import { cn } from '@/lib/utils'
 const navigation = [
     { href: '/', label: 'Overview', icon: LayoutDashboard },
     { href: '/apps', label: 'Apps', icon: Boxes },
+    { href: '/apps/oneclick', label: 'One-Click Apps', icon: Rocket },
     { href: '/monitoring', label: 'Monitoring', icon: Activity },
     { href: '/cluster', label: 'Cluster', icon: CircleGauge },
     { href: '/maintenance', label: 'Maintenance', icon: SlidersHorizontal },

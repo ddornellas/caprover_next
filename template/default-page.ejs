@@ -1,98 +1,178 @@
 <!doctype html>
-<html>
+<html lang="en">
 
 <head>
-    <meta charset=utf-8>
-    <meta content="width=device-width,initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0,user-scalable=no" name=viewport>
-    <title>Powered by CapRover</title>
+    <meta charset="utf-8">
+    <meta content="width=device-width,initial-scale=1" name="viewport">
+    <meta content="noindex,nofollow" name="robots">
+    <title><%=message_title%> · CapRover</title>
     <style>
-        html,
-        body {
-            font-family: sans-serif;
-            -ms-text-size-adjust: 100%;
-            -webkit-text-size-adjust: 100%;
-            background-color: #F7F8FB;
-            height: 100%;
-            -webkit-font-smoothing: antialiased;
+        :root {
+            color-scheme: dark;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #08111f;
+            color: #f8fafc;
         }
+
+        * { box-sizing: border-box; }
+
+        html, body { min-height: 100%; }
 
         body {
             margin: 0;
-            padding: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 15% 10%, rgba(56, 189, 248, .18), transparent 32rem),
+                radial-gradient(circle at 90% 90%, rgba(99, 102, 241, .2), transparent 30rem),
+                #08111f;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .page {
             display: flex;
+            min-height: 100vh;
             flex-direction: column;
             align-items: center;
             justify-content: center;
+            padding: 32px 20px;
         }
 
-        .message {
-            text-align: center;
-            align-self: center;
-            display: flex;
-            flex-direction: column;
+        .brand {
+            display: inline-flex;
             align-items: center;
-            padding: 20px;
-            max-width: 550px;
+            gap: 10px;
+            margin-bottom: 28px;
+            color: #e2e8f0;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: .14em;
+            text-transform: uppercase;
         }
 
-        .message__title {
-            font-size: 32px;
-            font-weight: 100;
-            margin-top: 15px;
-            color: #47494E;
-            margin-bottom: 8px;
+        .brand__mark {
+            display: grid;
+            width: 34px;
+            height: 34px;
+            place-items: center;
+            border: 1px solid rgba(125, 211, 252, .45);
+            border-radius: 11px;
+            background: linear-gradient(135deg, #0ea5e9, #4f46e5);
+            box-shadow: 0 10px 30px rgba(14, 165, 233, .28);
+            color: white;
+            font-size: 16px;
+        }
+
+        .card {
+            width: min(100%, 560px);
+            padding: clamp(28px, 6vw, 52px);
+            border: 1px solid rgba(148, 163, 184, .2);
+            border-radius: 24px;
+            background: rgba(15, 23, 42, .78);
+            box-shadow: 0 30px 80px rgba(0, 0, 0, .32), inset 0 1px 0 rgba(255, 255, 255, .06);
+            text-align: center;
+            backdrop-filter: blur(18px);
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 12px;
+            border: 1px solid rgba(125, 211, 252, .22);
+            border-radius: 999px;
+            background: rgba(14, 165, 233, .1);
+            color: #7dd3fc;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+
+        .status::before {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #fbbf24;
+            box-shadow: 0 0 0 4px rgba(251, 191, 36, .12);
+            content: "";
+        }
+
+        h1 {
+            margin: 24px 0 12px;
+            color: #f8fafc;
+            font-size: clamp(28px, 5vw, 42px);
+            line-height: 1.08;
+            letter-spacing: -.04em;
+        }
+
+        .body {
+            margin: 0 auto;
+            max-width: 430px;
+            color: #a8b5c7;
+            font-size: 16px;
+            line-height: 1.7;
+        }
+
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 30px;
         }
 
         .btn {
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            padding: 0 18px;
+            border: 1px solid rgba(148, 163, 184, .3);
+            border-radius: 12px;
+            background: rgba(30, 41, 59, .8);
+            color: #e2e8f0;
+            font: inherit;
+            font-size: 14px;
+            font-weight: 700;
             text-decoration: none;
-            padding: 11px 25px;
-            border-radius: 11px;
-            margin-top: 110px;
-            font-size: 19px;
-            color: #7F828B;
+            transition: border-color .2s, background .2s, transform .2s;
         }
 
-        body.defaultpagebody {
-            background: -webkit-linear-gradient(-45deg, #1d5b85 0%, #3295c7 100%);
-            background: linear-gradient(135deg, #1d5b85 0%, #3295c7 100%);
-        }
+        .btn:hover { border-color: rgba(125, 211, 252, .7); background: rgba(51, 65, 85, .9); transform: translateY(-1px); }
 
-        .message__title {
-            color: #fff;
-        }
+        .btn--primary { border-color: transparent; background: linear-gradient(135deg, #0ea5e9, #4f46e5); color: white; }
+        .btn--primary:hover { border-color: transparent; background: linear-gradient(135deg, #38bdf8, #6366f1); }
 
-        .message {
-            padding: 25px;
-            color: #fff;
-        }
+        .hint { margin: 24px 0 0; color: #64748b; font-size: 12px; }
 
-        body.defaultpagebody p {
-            color: rgba(255, 255, 255, 0.6);
-        }
+        footer { margin-top: 24px; color: #64748b; font-size: 12px; }
 
-        body.defaultpagebody .info {
-            fill: rgba(255, 255, 255, 0.9);
-        }
-
-        body.defaultpagebody .btn {
-            color: #fff;
-            border: 2px solid rgba(255, 255, 255, 0.7);
-        }
+        @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
     </style>
-    <base target=_parent />
+    <base target="_parent">
 </head>
 
-<body class=defaultpagebody>
-    <div class=message>
-        <div class=message__title>
-            <%=message_title%>
+<body>
+    <main class="page">
+        <div class="brand">
+            <span class="brand__mark" aria-hidden="true">C</span>
+            CapRover
         </div>
-        <div class=message>
-            <%=message_body%>
-        </div>
-        <a href="<%=message_link%>" target="_blank" rel="noopener noreferrer" class="btn">
-            <%=message_link_title%></a>
-    </div>
+        <section class="card" aria-labelledby="page-title">
+            <div class="status"><%=message_status%></div>
+            <h1 id="page-title"><%=message_title%></h1>
+            <% if (message_body) { %>
+            <p class="body"><%=message_body%></p>
+            <% } %>
+            <div class="actions">
+                <button class="btn btn--primary" type="button" onclick="window.location.reload()">Try again</button>
+                <a href="<%=message_link%>" target="_blank" rel="noopener noreferrer" class="btn"><%=message_link_title%></a>
+            </div>
+            <p class="hint">No data was lost. The service may be restarting or being deployed.</p>
+        </section>
+        <footer>Powered by CapRover</footer>
+    </main>
 </body>
 
 </html>
