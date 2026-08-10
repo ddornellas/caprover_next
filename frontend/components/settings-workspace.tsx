@@ -50,7 +50,10 @@ interface ProFeaturesState {
 
 interface ProAlert {
     event: 'UserLoggedIn' | 'AppBuildSuccessful' | 'AppBuildFailed'
-    action: { actionType: 'email' | 'webhook'; metadata?: unknown }
+    action: {
+        actionType: 'email' | 'webhook'
+        metadata?: unknown
+    }
 }
 
 interface ProConfig {
@@ -83,6 +86,22 @@ function getErrorMessage(error: unknown) {
     if (error instanceof CaptainApiError) return error.message
     if (error instanceof Error) return error.message
     return 'The operation could not be completed.'
+}
+
+function formatAlertMetadata(metadata: unknown) {
+    if (typeof metadata === 'string') return metadata
+    return JSON.stringify(metadata ?? {}, null, 2) || ''
+}
+
+function parseAlertMetadata(value: string) {
+    const trimmed = value.trim()
+    if (!trimmed) return undefined
+
+    try {
+        return JSON.parse(trimmed) as unknown
+    } catch {
+        return value
+    }
 }
 
 export function SettingsWorkspace({
@@ -331,20 +350,44 @@ export function SettingsWorkspace({
         )
     }
 
-    function toggleProAlert(event: ProAlert['event'], enabled: boolean) {
+    function toggleProAlertChannel(
+        event: ProAlert['event'],
+        actionType: ProAlert['action']['actionType'],
+        enabled: boolean
+    ) {
         setProConfig((current) => {
             if (!current) return current
             const alerts = current.alerts.filter(
                 (alert) =>
                     !(
                         alert.event === event &&
-                        alert.action.actionType === 'email'
+                        alert.action.actionType === actionType
                     )
             )
             if (enabled) {
-                alerts.push({ event, action: { actionType: 'email' } })
+                alerts.push({ event, action: { actionType } })
             }
             return { ...current, alerts }
+        })
+    }
+
+    function updateWebhookMetadata(event: ProAlert['event'], value: string) {
+        const metadata = parseAlertMetadata(value)
+        setProConfig((current) => {
+            if (!current) return current
+
+            return {
+                ...current,
+                alerts: current.alerts.map((alert) =>
+                    alert.event === event &&
+                    alert.action.actionType === 'webhook'
+                        ? {
+                              ...alert,
+                              action: { ...alert.action, metadata },
+                          }
+                        : alert
+                ),
+            }
         })
     }
 
@@ -355,13 +398,13 @@ export function SettingsWorkspace({
                 method: 'POST',
                 body: JSON.stringify({ proConfigs: proConfig }),
             })
-        }, 'CapRover PRO alerts saved.')
+        }, 'Alert settings saved.')
     }
 
     function connectProApiKey() {
         const apiKey = proApiKey.trim()
         if (!apiKey) {
-            setError('Enter a CapRover PRO API key.')
+            setError('Enter an integration API key.')
             return
         }
 
@@ -372,7 +415,25 @@ export function SettingsWorkspace({
             })
             setProApiKey('')
             await loadSettings()
-        }, 'CapRover PRO API key connected.')
+        }, 'Integration API key connected.')
+    }
+
+    function disconnectProApiKey() {
+        if (
+            !window.confirm(
+                'Disconnect this integration? Alerts and two-factor authentication will be disabled.'
+            )
+        ) {
+            return
+        }
+
+        return run(async () => {
+            await clientApiRequest('/user/pro/apikey/disconnect/', {
+                method: 'POST',
+            })
+            setProApiKey('')
+            await loadSettings()
+        }, 'Integration disconnected.')
     }
 
     if (loading && !nginx && !themes.length && !otp) {
@@ -638,14 +699,16 @@ export function SettingsWorkspace({
                 />
             )}
 
-            {proFeatures?.isFeatureFlagEnabled && (
+            {proFeatures && (
                 <ProSettings
                     features={proFeatures}
                     config={proConfig}
                     apiKey={proApiKey}
                     setApiKey={setProApiKey}
                     onConnectApiKey={() => void connectProApiKey()}
-                    onToggleAlert={toggleProAlert}
+                    onDisconnectApiKey={() => void disconnectProApiKey()}
+                    onToggleAlert={toggleProAlertChannel}
+                    onUpdateWebhookMetadata={updateWebhookMetadata}
                     onSaveConfig={() => void saveProConfig()}
                     disabled={working}
                 />
@@ -951,7 +1014,9 @@ function ProSettings({
     apiKey,
     setApiKey,
     onConnectApiKey,
+    onDisconnectApiKey,
     onToggleAlert,
+    onUpdateWebhookMetadata,
     onSaveConfig,
     disabled,
 }: {
@@ -960,22 +1025,45 @@ function ProSettings({
     apiKey: string
     setApiKey: (value: string) => void
     onConnectApiKey: () => void
-    onToggleAlert: (event: ProAlert['event'], enabled: boolean) => void
+    onDisconnectApiKey: () => void
+    onToggleAlert: (
+        event: ProAlert['event'],
+        actionType: ProAlert['action']['actionType'],
+        enabled: boolean
+    ) => void
+    onUpdateWebhookMetadata: (event: ProAlert['event'], value: string) => void
     onSaveConfig: () => void
     disabled: boolean
 }) {
+    const [replaceKey, setReplaceKey] = useState(false)
+    const showKeyForm = !features.isSubscribed || replaceKey
+
+    useEffect(() => {
+        setReplaceKey(false)
+    }, [features.isSubscribed])
+
     return (
         <Card>
             <CardHeader>
-                <CardTitle>CapRover PRO</CardTitle>
+                <CardTitle>Integrations and alerts</CardTitle>
                 <p className="text-sm text-muted-foreground">
-                    Configure the existing PRO API integration and alerts.
+                    Connect the optional account integration to enable
+                    notifications, event reporting, and two-factor
+                    authentication.
                 </p>
             </CardHeader>
             <CardContent className="space-y-5">
                 <div className="flex flex-wrap items-center gap-2">
-                    <Badge>
-                        {features.isSubscribed ? 'Connected' : 'Not connected'}
+                    <Badge
+                        className={
+                            features.isSubscribed
+                                ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                                : 'border-amber-300 bg-amber-50 text-amber-700'
+                        }
+                    >
+                        {features.isSubscribed
+                            ? 'Integration connected'
+                            : 'Integration not configured'}
                     </Badge>
                     <a
                         href="https://pro.caprover.com"
@@ -983,16 +1071,17 @@ function ProSettings({
                         rel="noreferrer"
                         className="text-sm text-primary hover:underline"
                     >
-                        Get a PRO API key
+                        Open account portal
                     </a>
                 </div>
-                {!features.isSubscribed && (
+                {showKeyForm && (
                     <div className="flex flex-col gap-2 sm:flex-row">
                         <Input
                             type="password"
                             value={apiKey}
                             onChange={(event) => setApiKey(event.target.value)}
-                            placeholder="pro_api_key"
+                            placeholder="Paste an API key"
+                            aria-label="Integration API key"
                             autoComplete="off"
                         />
                         <Button
@@ -1000,42 +1089,137 @@ function ProSettings({
                             disabled={disabled || !apiKey.trim()}
                             onClick={onConnectApiKey}
                         >
-                            Connect key
+                            {features.isSubscribed
+                                ? 'Replace key'
+                                : 'Connect key'}
                         </Button>
+                        {features.isSubscribed && replaceKey && (
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                onClick={() => {
+                                    setReplaceKey(false)
+                                    setApiKey('')
+                                }}
+                            >
+                                Cancel
+                            </Button>
+                        )}
                     </div>
                 )}
-                {features.isSubscribed && config && (
+                {features.isSubscribed && !replaceKey && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed p-3 text-sm">
+                        <span className="text-muted-foreground">
+                            The stored key is never shown again.
+                        </span>
+                        <div className="flex gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                disabled={disabled}
+                                onClick={() => setReplaceKey(true)}
+                            >
+                                Replace key
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                disabled={disabled}
+                                onClick={onDisconnectApiKey}
+                            >
+                                Disconnect
+                            </Button>
+                        </div>
+                    </div>
+                )}
+                {features.isSubscribed && config && !replaceKey && (
                     <div className="space-y-3">
+                        <div>
+                            <p className="font-medium">Notification channels</p>
+                            <p className="text-sm text-muted-foreground">
+                                Choose email or webhook delivery for each
+                                supported event.
+                            </p>
+                        </div>
                         {proAlertOptions.map((option) => {
-                            const enabled = config.alerts.some(
+                            const emailEnabled = config.alerts.some(
                                 (alert) =>
                                     alert.event === option.event &&
                                     alert.action.actionType === 'email'
                             )
+                            const webhookAlert = config.alerts.find(
+                                (alert) =>
+                                    alert.event === option.event &&
+                                    alert.action.actionType === 'webhook'
+                            )
                             return (
-                                <label
+                                <div
                                     key={option.event}
-                                    className="flex items-start gap-3 rounded-lg border p-3"
+                                    className="space-y-3 rounded-lg border p-3"
                                 >
-                                    <input
-                                        type="checkbox"
-                                        checked={enabled}
-                                        onChange={(event) =>
-                                            onToggleAlert(
-                                                option.event,
-                                                event.target.checked
-                                            )
-                                        }
-                                    />
-                                    <span>
+                                    <div>
                                         <span className="block text-sm font-medium">
                                             {option.label}
                                         </span>
                                         <span className="block text-xs text-muted-foreground">
                                             {option.description}
                                         </span>
-                                    </span>
-                                </label>
+                                    </div>
+                                    <div className="flex flex-wrap gap-4 text-sm">
+                                        <label className="flex items-center gap-2">
+                                            <input
+                                                type="checkbox"
+                                                checked={emailEnabled}
+                                                onChange={(event) =>
+                                                    onToggleAlert(
+                                                        option.event,
+                                                        'email',
+                                                        event.target.checked
+                                                    )
+                                                }
+                                            />
+                                            Email
+                                        </label>
+                                        <label className="flex items-center gap-2">
+                                            <input
+                                                type="checkbox"
+                                                checked={!!webhookAlert}
+                                                onChange={(event) =>
+                                                    onToggleAlert(
+                                                        option.event,
+                                                        'webhook',
+                                                        event.target.checked
+                                                    )
+                                                }
+                                            />
+                                            Webhook
+                                        </label>
+                                    </div>
+                                    {webhookAlert && (
+                                        <div className="space-y-2">
+                                            <Label
+                                                htmlFor={`webhook-metadata-${option.event}`}
+                                            >
+                                                Webhook metadata (JSON)
+                                            </Label>
+                                            <Textarea
+                                                id={`webhook-metadata-${option.event}`}
+                                                rows={3}
+                                                className="font-mono text-xs"
+                                                value={formatAlertMetadata(
+                                                    webhookAlert.action.metadata
+                                                )}
+                                                onChange={(event) =>
+                                                    onUpdateWebhookMetadata(
+                                                        option.event,
+                                                        event.target.value
+                                                    )
+                                                }
+                                                placeholder='{"url":"https://example.com/alerts"}'
+                                            />
+                                        </div>
+                                    )}
+                                </div>
                             )
                         })}
                         <div className="flex justify-end">
@@ -1044,7 +1228,7 @@ function ProSettings({
                                 disabled={disabled}
                                 onClick={onSaveConfig}
                             >
-                                Save PRO alerts
+                                Save alert settings
                             </Button>
                         </div>
                     </div>

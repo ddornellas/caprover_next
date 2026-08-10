@@ -68,6 +68,35 @@ the [roadmap](ROADMAP.md).
 For the agent API contract and deployment examples, see
 [agent access](docs/AGENT_ACCESS.md).
 
+## Integrations and notifications
+
+The Settings page includes an optional account integration for notifications,
+event reporting, and two-factor authentication. The interface intentionally
+uses neutral integration language while preserving the existing API v2
+compatibility paths.
+
+From **Settings → Integrations and alerts**, an administrator can:
+
+- connect, replace, or disconnect the integration API key;
+- configure login, successful-build, and failed-build notifications;
+- choose email or webhook delivery for each notification type;
+- provide webhook metadata as JSON; and
+- configure or disable two-factor authentication.
+
+API keys are accepted only as non-empty strings, are never returned to the
+frontend after connection, and are cleared together with alert and
+two-factor settings when the integration is disconnected. The existing
+endpoints remain available for compatible clients:
+
+```text
+POST /api/v2/user/pro/apikey/
+POST /api/v2/user/pro/apikey/disconnect/
+GET  /api/v2/user/pro/configs/
+POST /api/v2/user/pro/configs/
+GET  /api/v2/user/pro/otp/
+POST /api/v2/user/pro/otp/
+```
+
 ## Upstream attribution
 
 CapRover Next retains the upstream CapRover license and acknowledges the

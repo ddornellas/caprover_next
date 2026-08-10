@@ -14,13 +14,24 @@ const OTP_TOKEN_LENGTH = 6
 const router = express.Router()
 
 router.post('/apikey/', function (req, res, next) {
-    const apiKey = `${req.body.apiKey || ''}`
+    const rawApiKey = req.body?.apiKey
+    const apiKey = typeof rawApiKey === 'string' ? rawApiKey.trim() : ''
 
     const userManager =
         InjectionExtractor.extractUserFromInjected(res).user.userManager
 
     Promise.resolve()
         .then(function () {
+            if (
+                typeof rawApiKey !== 'string' ||
+                !apiKey ||
+                rawApiKey.length > 4096
+            ) {
+                throw ApiStatusCodes.createError(
+                    ApiStatusCodes.ILLEGAL_PARAMETER,
+                    'apiKey must be a non-empty string'
+                )
+            }
             return userManager.datastore.getRootDomain() as string
         })
         .then(function (rootDomain) {
@@ -42,6 +53,25 @@ router.post('/apikey/', function (req, res, next) {
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'API Key is set'
+            )
+            baseApi.data = {}
+            res.send(baseApi)
+        })
+        .catch(ApiStatusCodes.createCatcher(res))
+})
+
+router.post('/apikey/disconnect/', function (req, res, next) {
+    const userManager =
+        InjectionExtractor.extractUserFromInjected(res).user.userManager
+
+    Promise.resolve()
+        .then(function () {
+            return userManager.datastore.getProDataStore().clearAllProConfigs()
+        })
+        .then(function () {
+            const baseApi = new BaseApi(
+                ApiStatusCodes.STATUS_OK,
+                'Integration disconnected'
             )
             baseApi.data = {}
             res.send(baseApi)

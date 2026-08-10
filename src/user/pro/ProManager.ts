@@ -77,7 +77,7 @@ export default class ProManager {
                 }
 
                 if (!data.data) throw new Error('Unexpected Pro API response')
-                return data.data // pulling out data part of CapRover Pro API response
+                return data.data // pulling out data part of account API response
             })
             .catch((err) => {
                 Logger.e(err)
@@ -275,7 +275,7 @@ export default class ProManager {
                 }
 
                 if (!data.data) throw new Error('Unexpected Pro API response')
-                return data.data // pulling out data part of CapRover Pro API response
+                return data.data // pulling out data part of account API response
             })
             .catch((err) => {
                 Logger.e(err, 'reportUnAuthAnalyticsEvent failed!')
