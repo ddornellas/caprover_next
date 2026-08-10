@@ -55,6 +55,10 @@ describe('agent access', () => {
         )
         expect(authenticated?.id).toBe(created.metadata.id)
         expect(authenticated?.lastUsedAt).toBeDefined()
+
+        const firstLastUsedAt = authenticated?.lastUsedAt
+        await authenticateAgentApiKey(store, created.apiKey)
+        expect(store.keys[0].lastUsedAt).toBe(firstLastUsedAt)
     })
 
     test('revocation immediately invalidates a key', async () => {

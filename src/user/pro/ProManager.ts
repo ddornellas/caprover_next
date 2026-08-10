@@ -11,6 +11,7 @@ import { CapRoverEventType, ICapRoverEvent } from './../events/ICapRoverEvent'
 type API_METHOD = 'post' | 'get'
 
 const API_KEY_HEADER = 'x-api-key'
+const PRO_API_TIMEOUT_MS = 10_000
 
 export default class ProManager {
     private static activeApiIndex = Math.floor(Math.random() * 2)
@@ -52,6 +53,7 @@ export default class ProManager {
                     data: data,
                     url: ProManager.getBaseUrl() + path,
                     headers: headers,
+                    timeout: PRO_API_TIMEOUT_MS,
                 })
             })
             .then(function (axiosResponse) {
@@ -261,6 +263,7 @@ export default class ProManager {
                     data: { event },
                     url: `${CaptainConstants.configs.analyticsDomain}/api/v1/analytics/event`,
                     headers: headers,
+                    timeout: PRO_API_TIMEOUT_MS,
                 })
             })
             .then(function (axiosResponse) {

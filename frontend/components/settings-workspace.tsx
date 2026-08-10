@@ -89,6 +89,7 @@ function getErrorMessage(error: unknown) {
 }
 
 function formatAlertMetadata(metadata: unknown) {
+    if (metadata === undefined || metadata === null) return ''
     if (typeof metadata === 'string') return metadata
     return JSON.stringify(metadata ?? {}, null, 2) || ''
 }
@@ -100,7 +101,7 @@ function parseAlertMetadata(value: string) {
     try {
         return JSON.parse(trimmed) as unknown
     } catch {
-        return value
+        throw new Error('Webhook metadata must be valid JSON.')
     }
 }
 
@@ -125,6 +126,9 @@ export function SettingsWorkspace({
     const [otpToken, setOtpToken] = useState('')
     const [proFeatures, setProFeatures] = useState<ProFeaturesState>()
     const [proConfig, setProConfig] = useState<ProConfig>()
+    const [webhookMetadataDrafts, setWebhookMetadataDrafts] = useState<
+        Partial<Record<ProAlert['event'], string>>
+    >({})
     const [proApiKey, setProApiKey] = useState('')
     const [loading, setLoading] = useState(true)
     const [working, setWorking] = useState(false)
@@ -173,7 +177,17 @@ export function SettingsWorkspace({
                 setProFeatures(proFeaturesResult.value.data.proFeaturesState)
             }
             if (proConfigResult.status === 'fulfilled') {
-                setProConfig(proConfigResult.value.data.proConfigs)
+                const loadedConfig = proConfigResult.value.data.proConfigs
+                setProConfig(loadedConfig)
+                const drafts: Partial<Record<ProAlert['event'], string>> = {}
+                loadedConfig?.alerts.forEach((alert) => {
+                    if (alert.action.actionType === 'webhook') {
+                        drafts[alert.event] = formatAlertMetadata(
+                            alert.action.metadata
+                        )
+                    }
+                })
+                setWebhookMetadataDrafts(drafts)
             }
 
             const firstFailure = results.find(
@@ -355,6 +369,21 @@ export function SettingsWorkspace({
         actionType: ProAlert['action']['actionType'],
         enabled: boolean
     ) {
+        if (actionType === 'webhook') {
+            setWebhookMetadataDrafts((current) => {
+                if (enabled) {
+                    return {
+                        ...current,
+                        [event]: current[event] || '',
+                    }
+                }
+
+                const next = { ...current }
+                delete next[event]
+                return next
+            })
+        }
+
         setProConfig((current) => {
             if (!current) return current
             const alerts = current.alerts.filter(
@@ -372,32 +401,63 @@ export function SettingsWorkspace({
     }
 
     function updateWebhookMetadata(event: ProAlert['event'], value: string) {
-        const metadata = parseAlertMetadata(value)
-        setProConfig((current) => {
-            if (!current) return current
+        setWebhookMetadataDrafts((current) => ({
+            ...current,
+            [event]: value,
+        }))
+    }
 
+    function getWebhookMetadataText(
+        event: ProAlert['event'],
+        metadata: unknown
+    ) {
+        return Object.prototype.hasOwnProperty.call(
+            webhookMetadataDrafts,
+            event
+        )
+            ? webhookMetadataDrafts[event] || ''
+            : formatAlertMetadata(metadata)
+    }
+
+    function getProConfigForSave() {
+        if (!proConfig) return undefined
+
+        try {
             return {
-                ...current,
-                alerts: current.alerts.map((alert) =>
-                    alert.event === event &&
-                    alert.action.actionType === 'webhook'
-                        ? {
-                              ...alert,
-                              action: { ...alert.action, metadata },
-                          }
-                        : alert
-                ),
+                ...proConfig,
+                alerts: proConfig.alerts.map((alert) => {
+                    if (alert.action.actionType !== 'webhook') return alert
+
+                    return {
+                        ...alert,
+                        action: {
+                            ...alert.action,
+                            metadata: parseAlertMetadata(
+                                getWebhookMetadataText(
+                                    alert.event,
+                                    alert.action.metadata
+                                )
+                            ),
+                        },
+                    }
+                }),
             }
-        })
+        } catch {
+            setError('Webhook metadata must be valid JSON before saving.')
+            return undefined
+        }
     }
 
     function saveProConfig() {
-        if (!proConfig) return
+        const configToSave = getProConfigForSave()
+        if (!configToSave) return
+
         return run(async () => {
             await clientApiRequest('/user/pro/configs/', {
                 method: 'POST',
-                body: JSON.stringify({ proConfigs: proConfig }),
+                body: JSON.stringify({ proConfigs: configToSave }),
             })
+            setProConfig(configToSave)
         }, 'Alert settings saved.')
     }
 
@@ -699,7 +759,7 @@ export function SettingsWorkspace({
                 />
             )}
 
-            {proFeatures && (
+            {proFeatures?.isFeatureFlagEnabled && (
                 <ProSettings
                     features={proFeatures}
                     config={proConfig}
@@ -709,6 +769,7 @@ export function SettingsWorkspace({
                     onDisconnectApiKey={() => void disconnectProApiKey()}
                     onToggleAlert={toggleProAlertChannel}
                     onUpdateWebhookMetadata={updateWebhookMetadata}
+                    webhookMetadataDrafts={webhookMetadataDrafts}
                     onSaveConfig={() => void saveProConfig()}
                     disabled={working}
                 />
@@ -1017,6 +1078,7 @@ function ProSettings({
     onDisconnectApiKey,
     onToggleAlert,
     onUpdateWebhookMetadata,
+    webhookMetadataDrafts,
     onSaveConfig,
     disabled,
 }: {
@@ -1032,6 +1094,7 @@ function ProSettings({
         enabled: boolean
     ) => void
     onUpdateWebhookMetadata: (event: ProAlert['event'], value: string) => void
+    webhookMetadataDrafts: Partial<Record<ProAlert['event'], string>>
     onSaveConfig: () => void
     disabled: boolean
 }) {
@@ -1206,9 +1269,20 @@ function ProSettings({
                                                 id={`webhook-metadata-${option.event}`}
                                                 rows={3}
                                                 className="font-mono text-xs"
-                                                value={formatAlertMetadata(
-                                                    webhookAlert.action.metadata
-                                                )}
+                                                value={
+                                                    Object.prototype.hasOwnProperty.call(
+                                                        webhookMetadataDrafts,
+                                                        option.event
+                                                    )
+                                                        ? webhookMetadataDrafts[
+                                                              option.event
+                                                          ] || ''
+                                                        : formatAlertMetadata(
+                                                              webhookAlert
+                                                                  .action
+                                                                  .metadata
+                                                          )
+                                                }
                                                 onChange={(event) =>
                                                     onUpdateWebhookMetadata(
                                                         option.event,

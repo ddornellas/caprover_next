@@ -898,17 +898,18 @@ upgrade_operation() {
     reference="$(image_reference)"
     log "Updating $SERVICE_NAME to $reference"
     if [[ "$dry_run" == "true" ]]; then
-        run docker service update --detach=false --image "$reference" "$SERVICE_NAME"
+        run docker service update --detach=false --update-order stop-first --image "$reference" "$SERVICE_NAME"
         return 0
     fi
-    if ! docker service update --detach=false --image "$reference" "$SERVICE_NAME"; then
+    backup_operation
+    if ! docker service update --detach=false --update-order stop-first --image "$reference" "$SERVICE_NAME"; then
         warn 'service update failed; requesting Docker rollback'
-        docker service update --detach=false --rollback "$SERVICE_NAME" || true
+        docker service update --detach=false --update-order stop-first --rollback "$SERVICE_NAME" || true
         die "upgrade failed; previous image was $previous_image"
     fi
     if ! wait_for_service; then
         warn 'health check failed; requesting Docker rollback'
-        docker service update --detach=false --rollback "$SERVICE_NAME" || true
+        docker service update --detach=false --update-order stop-first --rollback "$SERVICE_NAME" || true
         die "upgrade failed and rollback was requested"
     fi
     write_manifest
@@ -918,13 +919,13 @@ upgrade_operation() {
 rollback_operation() {
     require_privileges
     if [[ "$dry_run" == "true" ]]; then
-        run docker service update --detach=false --rollback "$SERVICE_NAME"
+        run docker service update --detach=false --update-order stop-first --rollback "$SERVICE_NAME"
         return 0
     fi
     check_docker_compatibility
     docker service inspect "$SERVICE_NAME" >/dev/null 2>&1 || die "$SERVICE_NAME does not exist"
     service_is_owned || die "refusing to roll back $SERVICE_NAME: CapRover ownership label is missing"
-    docker service update --detach=false --rollback "$SERVICE_NAME"
+    docker service update --detach=false --update-order stop-first --rollback "$SERVICE_NAME"
     wait_for_service
     log 'Rollback completed successfully'
 }
@@ -937,7 +938,8 @@ backup_operation() {
     if [[ "$dry_run" == "true" ]]; then
         run install -d -m 0700 "$data_dir/installer/backups"
         run tar -C "$data_dir" -czf "$backup_path" data
-        log "would create encrypted-at-rest backup at $backup_path; protect it as it contains secrets"
+        run chmod 0600 "$backup_path"
+        log "would create a mode-0600 backup at $backup_path; protect it as it contains secrets"
         return 0
     fi
     install -d -m 0700 "$data_dir/installer/backups"

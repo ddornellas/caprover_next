@@ -148,11 +148,11 @@ Swarm setup.
 
 ## Deploy a new image to an existing VM
 
-Use the operator CLI so every upgrade creates a consistent backup and health
-check:
+The operator CLI creates a mode-0600 backup before every upgrade, updates the
+control plane with a stop-first strategy for host-published ports, and waits
+for a health check:
 
 ```bash
-sudo ./caprover-next-install backup
 sudo ./caprover-next-install upgrade \
   --version 1.16.0 \
   --image-digest sha256:<64-hex>

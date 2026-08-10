@@ -54,3 +54,5 @@ docker buildx create --name mybuilder
 docker buildx use mybuilder
 
 docker buildx build --pull --provenance=true --sbom=true --platform linux/amd64,linux/arm64 -t $IMAGE_NAME:$CAPROVER_VERSION -t $IMAGE_NAME:latest --build-arg CACHE_BUST="${GITHUB_SHA:-release}" -f dockerfile-captain.release --push .
+docker pull "$IMAGE_NAME:$CAPROVER_VERSION"
+docker run --rm "$IMAGE_NAME:$CAPROVER_VERSION" test -f /usr/src/app/dockerfiles/node

@@ -23,6 +23,7 @@ const MAX_KEY_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000
 const DEPLOYMENT_REQUEST_TTL_MS = 30 * 60 * 1000
 const MAX_DEPLOYMENT_REQUESTS = 500
 const MAX_DEPLOYMENT_REQUEST_AGE_MS = 30 * 24 * 60 * 60 * 1000
+const AGENT_LAST_USED_WRITE_INTERVAL_MS = 60_000
 const storeMutationQueues = new WeakMap<object, Promise<void>>()
 
 async function withStoreMutation<T>(
@@ -301,8 +302,16 @@ export async function authenticateAgentApiKey(
 
         if (!record) return undefined
 
-        record.lastUsedAt = nowIso()
-        await store.setAgentKeys(keys)
+        const lastUsedAt = record.lastUsedAt
+            ? Date.parse(record.lastUsedAt)
+            : Number.NaN
+        if (
+            !Number.isFinite(lastUsedAt) ||
+            Date.now() - lastUsedAt >= AGENT_LAST_USED_WRITE_INTERVAL_MS
+        ) {
+            record.lastUsedAt = nowIso()
+            await store.setAgentKeys(keys)
+        }
         return record
     })
 }

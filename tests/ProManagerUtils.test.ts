@@ -70,4 +70,32 @@ describe('ProManagerUtils', () => {
             ],
         })
     })
+
+    it('rejects invalid configuration payloads instead of silently dropping them', () => {
+        expect(() =>
+            ProManagerUtils.validateProConfig({
+                alerts: [
+                    {
+                        event: 'UnsupportedEvent',
+                        action: { actionType: 'email' },
+                    },
+                ],
+            })
+        ).toThrow('unsupported event')
+
+        expect(() =>
+            ProManagerUtils.validateProConfig({
+                alerts: [
+                    {
+                        event: 'UserLoggedIn',
+                        action: { actionType: 'email' },
+                    },
+                    {
+                        event: 'UserLoggedIn',
+                        action: { actionType: 'email' },
+                    },
+                ],
+            })
+        ).toThrow('duplicate channel')
+    })
 })

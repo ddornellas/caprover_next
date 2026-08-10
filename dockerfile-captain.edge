@@ -30,6 +30,7 @@ COPY --from=builder /usr/src/app/frontend/next.config.ts ./frontend/next.config.
 COPY --from=builder /usr/src/app/frontend/package.json ./frontend/package.json
 COPY --from=builder /usr/src/app/public ./public
 COPY --from=builder /usr/src/app/template ./template
+COPY --from=builder /usr/src/app/dockerfiles ./dockerfiles
 COPY --from=builder /usr/src/app/config-override.json ./config-override.json
 
 # Install optional/native packages for the image's target architecture.

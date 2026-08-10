@@ -15,7 +15,7 @@ export enum ProAlertActionType {
 
 export interface ProAlertAction {
     actionType: ProAlertActionType
-    metadata?: any
+    metadata?: unknown
 }
 
 export enum ProAlertEvent {

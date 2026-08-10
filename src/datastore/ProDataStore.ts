@@ -2,6 +2,7 @@ import configstore = require('configstore')
 import { v4 as uuid } from 'uuid'
 import { IProConfig } from '../models/IProFeatures'
 import ProManagerUtils from '../user/pro/ProManagerUtils'
+import CaptainEncryptor from '../utils/Encryptor'
 
 const IS_OTP_ENABLED = 'isOtpEnabled'
 const PRO_API_KEY = 'proApiKey'
@@ -15,7 +16,13 @@ function getDataKey(key: string) {
 }
 
 class ProDataStore {
+    private encryptor?: CaptainEncryptor
+
     constructor(private data: configstore) {}
+
+    setEncryptor(encryptor: CaptainEncryptor) {
+        this.encryptor = encryptor
+    }
 
     isOtpEnabled(): Promise<boolean> {
         const self = this
@@ -34,7 +41,23 @@ class ProDataStore {
     getApiKey() {
         const self = this
         return Promise.resolve().then(function () {
-            return `${self.data.get(getDataKey(PRO_API_KEY)) || ''}`
+            const stored = `${self.data.get(getDataKey(PRO_API_KEY)) || ''}`
+            if (!stored) return ''
+            if (!self.encryptor) return stored.startsWith('v2:') ? '' : stored
+
+            if (!stored.startsWith('v2:')) {
+                self.data.set(
+                    getDataKey(PRO_API_KEY),
+                    self.encryptor.encrypt(stored)
+                )
+                return stored
+            }
+
+            try {
+                return self.encryptor.decrypt(stored)
+            } catch {
+                return ''
+            }
         })
     }
 
@@ -56,14 +79,22 @@ class ProDataStore {
     clearAllProConfigs() {
         const self = this
         return Promise.resolve().then(function () {
-            return self.data.delete(PRO_PREFIX)
+            const installationId = self.data.get(getDataKey(INSTALLATION_ID))
+            self.data.delete(PRO_PREFIX)
+            if (installationId) {
+                self.data.set(getDataKey(INSTALLATION_ID), installationId)
+            }
         })
     }
 
     setApiKey(apiKey: string) {
         const self = this
         return Promise.resolve().then(function () {
-            return self.data.set(getDataKey(PRO_API_KEY), `${apiKey}`)
+            const value = `${apiKey}`
+            return self.data.set(
+                getDataKey(PRO_API_KEY),
+                self.encryptor ? self.encryptor.encrypt(value) : value
+            )
         })
     }
 

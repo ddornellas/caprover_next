@@ -134,7 +134,7 @@ router.post('/configs/', function (req, res, next) {
     Promise.resolve()
         .then(function () {
             return userManager.proManager.updateConfig(
-                ProManagerUtils.ensureProConfigType(req.body.proConfigs)
+                ProManagerUtils.validateProConfig(req.body?.proConfigs)
             )
         })
         .then(function () {

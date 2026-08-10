@@ -1,79 +1,191 @@
 <div align="center">
+<img src="frontend/public/full-logo.png" alt="CapRover Next" width="520" />
+
 <h1>CapRover Next</h1>
+
+<p><strong>The deployment control plane built for humans, automation, and AI agents.</strong></p>
+
 <a href="https://hub.docker.com/r/ddornellas/caprover-next/" target="_blank" title="Docker Pulls">
 <img src="https://img.shields.io/docker/pulls/ddornellas/caprover-next.svg" alt="Docker Pulls"/>
 </a>
-<a href="https://github.com/ddornellas/caprover_next/releases" target="_blank" title="GitHub release (latest by date)">
-<img src="https://img.shields.io/github/v/release/ddornellas/caprover_next" alt="GitHub release (latest by date)"/>
-</a>
-
-Easiest app/database deployment platform and webserver package for your NodeJS, Python, PHP, Ruby, Go applications.
-
-No Docker, nginx knowledge required!
-
-<a href="https://youtu.be/VPHEXPfsvyQ" target="_blank" title="YouTube">
-<img src="https://raw.githubusercontent.com/caprover/caprover-website/master/graphics/screenshots-video-small.png" alt="YouTube"/>
+<a href="https://github.com/ddornellas/caprover_next/releases" target="_blank" title="GitHub release">
+<img src="https://img.shields.io/github/v/release/ddornellas/caprover_next" alt="GitHub release"/>
 </a>
 </div>
 
-## What's this?
+CapRover Next keeps the simple CapRover workflow—Docker Swarm, nginx,
+Let’s Encrypt, and a focused web UI—and adds a secure control channel for
+AI-powered deployment agents.
 
-CapRover Next is a separately distributed fork of CapRover with an automated,
-secure VM installer and additional control-plane improvements. It keeps the
-CapRover runtime contracts (`captain-*`, `/captain`, and API v2) so existing
-data can be migrated without renaming Docker resources. It is not an official
-CapRover distribution.
+An agent can inspect only the applications it was assigned, submit a build,
+wait for a human decision, or deploy automatically according to its role. It
+does not need the root password, SSH, or access to the host Docker socket.
 
-CapRover is an extremely easy to use app/database deployment & web server manager for your **NodeJS, Python, PHP, ASP.NET, Ruby, MariaDB, MySQL, MongoDB, Postgres, WordPress (and etc...)** applications!
+> CapRover Next does not run an AI model itself. It provides the constrained,
+> auditable deployment API that an external AI agent, CI job, or automation
+> service can use safely.
 
-It's blazingly fast and very robust as it uses Docker, nginx, LetsEncrypt and NetData under the hood behind its simple-to-use interface.
+## Why agents are the main step forward
 
-✔ CLI for automation and scripting
+The useful AI deployment loop is not “give an assistant root access and hope
+for the best.” It is a controlled handoff:
 
-✔ Web GUI for ease of access and convenience
+```mermaid
+flowchart LR
+    AI[AI agent or CI service]
+    API[Scoped Agent API]
+    POLICY{Role + exact app allowlist}
+    READ[Read apps and logs]
+    APPROVAL[On approval]
+    HUMAN[Human reviews in the UI]
+    DEPLOY[Deploy total]
+    SWARM[CapRover and Docker Swarm]
 
-✔ No lock-in! Remove CapRover and your apps keep working!
+    AI -->|Bearer API key| API
+    API --> POLICY
+    POLICY --> READ
+    POLICY --> APPROVAL
+    POLICY --> DEPLOY
+    APPROVAL --> HUMAN
+    HUMAN -->|Approve or reject| APPROVAL
+    DEPLOY --> SWARM
+    APPROVAL -->|Approved| SWARM
+```
 
-✔ Docker Swarm under the hood for containerization and clustering
+This makes the agent a deployment participant, not a privileged server user.
+The platform remains responsible for authorization, application scope,
+deployment state, audit records, and the final Docker operation.
 
-✔ Nginx (fully customizable template) under the hood for load-balancing
+### Three agent roles
 
-✔ Let's Encrypt under the hood for free SSL (HTTPS)
+| Role | Read apps/logs | Submit deployment | Human approval | Automatic deploy |
+| --- | ---: | ---: | ---: | ---: |
+| `read` | Yes | No | n/a | No |
+| `deploy_approval` | Yes | Yes | Required | No |
+| `deploy` | Yes | Yes | No | Yes |
 
-### Seriously! Who should care about CapRover?
+Every key has an explicit application allowlist and an optional expiration of
+up to one year. A key cannot access another application by guessing its name.
+Keys are shown once, stored as hashes, and can be revoked from **Settings →
+Agent access**.
 
--   A [web] developer who does not like spending hours and days setting up a server, build tools, sending code to server, build it, get an SSL certificate, install it, update nginx over and over again.
--   A developer who uses expensive services like Heroku, Microsoft Azure and etc. And is interested in reducing their cost by 50x (Heroku charges 250USD/month for their 2gb instance, the same server is 5$ on Hetzner!!)
--   Someone who prefers to write more of `showResults(getUserList())` and not much of `$ apt-get install libstdc++6 > /dev/null`
--   A developer who likes installing MariaDB, MySQL, MongoDB and etc on their server by selecting from a dropdown and clicking on install!
--   How much server/docker/linux knowledge is required to set up a CapRover server? Answer: Knowledge of Copy & Paste!! Head over to "Getting Started" for information on what to copy & paste ;-)
+### What an agent can and cannot do
 
-## Learn More!
+Agents can:
 
-For installation and release details, see the
-[VM installation and release runbook](docs/VM_DEPLOYMENT_AND_RELEASE.md).
-For upstream product documentation, visit https://CapRover.com/.
+- read safe application status and scoped logs;
+- deploy an existing application using an image or restricted Dockerfile lines;
+- request creation of a specific new application already present in its scope;
+- poll a deployment ID and receive a clear status; and
+- use idempotency keys so retries do not create duplicate deployments.
 
-## Repository operations
+Agents cannot:
 
-Maintainers working from this repository should use the
-[VM installation, deployment, and release runbook](docs/VM_DEPLOYMENT_AND_RELEASE.md).
-It documents the current Node.js 24 build, Docker image channels, GitHub
-Actions release flow, and the safe way to update a VM.
+- use the root password or SSH;
+- access the Docker socket or execute arbitrary host commands;
+- delete applications, volumes, registries, or Swarm resources;
+- use wildcard permissions or create arbitrary application names; or
+- receive environment variables, repository credentials, or raw Docker objects.
 
-For contribution and local development details, see
-[CONTRIBUTING.md](CONTRIBUTING.md) and the [frontend development notes](frontend/README.md).
-The planned frontend, agent-access, and log-observability work is tracked in
-the [roadmap](ROADMAP.md).
-For the agent API contract and deployment examples, see
-[agent access](docs/AGENT_ACCESS.md).
+New applications submitted by an approval-scoped agent appear in **Apps** as
+`On approval`. They do not create a Docker service until a human approves the
+request. Applications expose three operational states: `Published`, `On
+approval`, and `Paused`.
+
+Read the complete contract and examples in
+[docs/AGENT_ACCESS.md](docs/AGENT_ACCESS.md).
+
+## Quick agent example
+
+Create a key in **Settings → Agent access**, store the returned value securely,
+and use it as a Bearer token. The raw key is never returned again.
+
+```bash
+export CAPROVER_AGENT_KEY='cr_agent_...'
+export CAPROVER_URL='https://captain.example.com'
+
+# Discover the role and exact app scope.
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer ${CAPROVER_AGENT_KEY}" \
+  "${CAPROVER_URL}/api/v2/agent"
+
+# Read only the applications assigned to this key.
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer ${CAPROVER_AGENT_KEY}" \
+  "${CAPROVER_URL}/api/v2/agent/apps"
+
+# Submit a deployment for an existing scoped app.
+curl --fail --silent --show-error -X POST \
+  -H "Authorization: Bearer ${CAPROVER_AGENT_KEY}" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: release-2026-08-10-001' \
+  "${CAPROVER_URL}/api/v2/agent/deployments" \
+  -d '{
+    "appName": "my-api",
+    "gitHash": "abc123",
+    "captainDefinition": {
+      "schemaVersion": 2,
+      "imageName": "registry.example.com/my-api:abc123"
+    }
+  }'
+```
+
+For an approval-scoped key, the response contains a deployment ID and status
+`pending`. A human approves or rejects it in **Settings → Agent access**. For
+a full-deploy key, the deployment starts immediately and can be polled at
+`/api/v2/agent/deployments/:requestId`.
+
+## The rest of the platform
+
+CapRover Next remains a small control layer over Docker Swarm, nginx, and
+Let’s Encrypt:
+
+- **Applications:** status badges, tags, search, status filters, safe app
+  creation, deployment history, and project grouping.
+- **One-Click Apps:** searchable catalog, tags, filters, custom sources,
+  template editing, and controlled deployment workflows.
+- **Security:** scoped agent credentials, audit events, rate limiting, safe URL
+  and archive handling, secret redaction, security headers, and protected
+  backups.
+- **Integrations and alerts:** optional account integration, login/build
+  notifications through email or webhook, webhook metadata, and two-factor
+  authentication.
+- **Operations:** Node.js 24, multi-platform Docker images, VM installation,
+  digest pinning, health checks, backup, rollback, and release runbooks.
+
+## Installation
+
+Use a dedicated Ubuntu 22.04/24.04 or Debian 12+ VM with a public stable IPv4
+address. The installer installs Docker from the official repository, prepares
+`/captain`, creates a random initial password, runs the CapRover bootstrap, and
+waits for the control plane to become healthy.
+
+```bash
+VERSION=1.15.0
+curl -fsSLO "https://github.com/ddornellas/caprover_next/releases/download/v${VERSION}/caprover-next-install"
+curl -fsSLO "https://github.com/ddornellas/caprover_next/releases/download/v${VERSION}/checksums.txt"
+sha256sum -c checksums.txt
+chmod 0755 caprover-next-install
+
+sudo ./caprover-next-install install \
+  --version "${VERSION}" \
+  --domain apps.example.com \
+  --node-ip <VM_PUBLIC_IP> \
+  --accept-terms
+```
+
+After the first login, change the generated administrator password and create
+only the agent keys each automation service needs. Keep production deployments
+on the stable channel and pin the image digest for unattended upgrades.
+
+For the full VM, upgrade, backup, rollback, and release procedure, see
+[docs/VM_DEPLOYMENT_AND_RELEASE.md](docs/VM_DEPLOYMENT_AND_RELEASE.md).
 
 ## Integrations and notifications
 
-The Settings page includes an optional account integration for notifications,
-event reporting, and two-factor authentication. The interface intentionally
-uses neutral integration language while preserving the existing API v2
-compatibility paths.
+The Settings page includes an optional account integration for event reporting,
+notifications, and two-factor authentication. The interface uses neutral
+integration language while preserving the existing API v2 paths.
 
 From **Settings → Integrations and alerts**, an administrator can:
 
@@ -83,10 +195,11 @@ From **Settings → Integrations and alerts**, an administrator can:
 - provide webhook metadata as JSON; and
 - configure or disable two-factor authentication.
 
-API keys are accepted only as non-empty strings, are never returned to the
-frontend after connection, and are cleared together with alert and
-two-factor settings when the integration is disconnected. The existing
-endpoints remain available for compatible clients:
+API keys are never returned to the frontend after connection and are encrypted
+in the local data store. Disconnecting removes the integration key, alert
+configuration, and 2FA state while preserving the installation identity.
+
+Compatible API v2 endpoints remain available:
 
 ```text
 POST /api/v2/user/pro/apikey/
@@ -97,8 +210,35 @@ GET  /api/v2/user/pro/otp/
 POST /api/v2/user/pro/otp/
 ```
 
-## Upstream attribution
+## Development and validation
+
+Use Node.js 24:
+
+```bash
+npm ci
+npm run formatter
+npm run lint
+npm run build
+npm test -- --runInBand
+```
+
+The optional browser smoke test runs against a disposable CapRover instance:
+
+```bash
+npm run e2e:install
+CAPROVER_E2E_PASSWORD='your-test-password' npm run e2e
+```
+
+For frontend development, see [frontend/README.md](frontend/README.md). For
+the planned log observability work, see [ROADMAP.md](ROADMAP.md).
+
+## Project boundary
+
+CapRover Next is a separately distributed fork that keeps CapRover runtime
+contracts such as `captain-*`, `/captain`, and API v2 so existing data can be
+migrated without renaming Docker resources. It deliberately does not mirror
+every Docker or Swarm capability; advanced use cases should use the existing
+customization hooks.
 
 CapRover Next retains the upstream CapRover license and acknowledges the
-contributors to the original project. [[Contribute](CONTRIBUTING.md)].
-<a href="https://github.com/caprover/caprover/graphs/contributors"><img src="https://opencollective.com/caprover/contributors.svg?width=690&button=false" /></a>
+contributors to the original project. See [CONTRIBUTING.md](CONTRIBUTING.md).

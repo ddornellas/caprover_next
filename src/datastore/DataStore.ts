@@ -198,6 +198,7 @@ class DataStore {
         this.encryptor = new CaptainEncryptor(this.namespace + salt)
         this.appsDataStore.setEncryptor(this.encryptor)
         this.registriesDataStore.setEncryptor(this.encryptor)
+        this.proDataStore.setEncryptor(this.encryptor)
     }
 
     getNameSpace(): string {

@@ -23,6 +23,11 @@ jobs:
                     echo "tag $VERSION does not match configs.version $EXPECTED"
                     exit 1
                   fi
+                  INSTALLER_VERSION=$(sed -n 's/^readonly DEFAULT_STABLE_VERSION="\([^"]*\)"/\1/p' install/caprover-next-install)
+                  if [[ -z "$INSTALLER_VERSION" || "$INSTALLER_VERSION" != "$VERSION" ]]; then
+                    echo "tag $VERSION does not match installer default version $INSTALLER_VERSION"
+                    exit 1
+                  fi
             - name: Build installer artifact
               shell: bash
               run: |
