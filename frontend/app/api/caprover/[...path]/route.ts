@@ -2,6 +2,7 @@ import type { NextRequest } from 'next/server'
 import { isIP } from 'node:net'
 
 import { createProxyRequestInit } from '@/lib/proxy-request'
+import { getProxyProtocol } from '@/lib/proxy-origin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -49,11 +50,11 @@ async function proxy(request: NextRequest, context: RouteContext) {
     if (edgeClientIp && isIP(edgeClientIp)) {
         headers.set('x-real-ip', edgeClientIp)
     }
-    headers.set('x-forwarded-host', incomingUrl.host)
     headers.set(
-        'x-forwarded-proto',
-        new URL(request.url).protocol.replace(':', '')
+        'x-forwarded-host',
+        request.headers.get('host') || incomingUrl.host
     )
+    headers.set('x-forwarded-proto', getProxyProtocol(request, incomingUrl))
 
     try {
         const response = await fetch(
