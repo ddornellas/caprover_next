@@ -18,6 +18,7 @@ import type DataStore from '../../datastore/DataStore'
 import { recordAuditEvent } from '../AuditLogger'
 import Logger from '../../utils/Logger'
 import { redactText } from '../../utils/Redact'
+import { getAgentDeploymentDiagnostics } from './AgentDiagnostics'
 
 const AGENT_KEY_PREFIX = 'cr_agent_'
 const MAX_KEY_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000
@@ -840,6 +841,7 @@ export function getAgentDeploymentStatusForResponse(
         startedAt: request.startedAt,
         completedAt: request.completedAt,
         error: request.error,
+        diagnostics: request.diagnostics,
         previousVersion: request.previousVersion,
         deployedVersion: request.deployedVersion,
         verification: request.verification,
@@ -893,6 +895,18 @@ export async function getAgentDeploymentRequest(
         ) {
             request.status = 'expired'
             request.updatedAt = nowIso()
+            await store.setAgentDeploymentRequests(requests)
+        } else if (
+            request.status === 'running' &&
+            Date.parse(request.expiresAt) <= Date.now()
+        ) {
+            request.status = 'failed'
+            request.completedAt = nowIso()
+            request.updatedAt = nowIso()
+            request.error =
+                'Deployment was interrupted or exceeded its execution window before completion.'
+            request.verification = 'failed'
+            request.diagnostics = [request.error]
             await store.setAgentDeploymentRequests(requests)
         }
 
@@ -1050,6 +1064,19 @@ export async function runAgentDeployment(
         const message = redactText(
             `${deploymentError || 'Deployment failed'}`
         ).slice(0, 2000)
+        let diagnostics: string[] | undefined
+        try {
+            diagnostics = getAgentDeploymentDiagnostics(
+                serviceManager,
+                request.appName,
+                message
+            )
+        } catch (diagnosticsError) {
+            Logger.e(
+                diagnosticsError as Error,
+                `Could not collect agent deployment diagnostics: ${requestId}`
+            )
+        }
 
         let rolledBackAt: string | undefined
         try {
@@ -1102,6 +1129,7 @@ export async function runAgentDeployment(
                 current.status = 'failed'
                 current.completedAt = nowIso()
                 current.error = message
+                current.diagnostics = diagnostics
                 current.verification = 'failed'
                 current.rolledBackAt = rolledBackAt
             }

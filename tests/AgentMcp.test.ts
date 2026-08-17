@@ -1,4 +1,5 @@
 import {
+    callAgentMcpTool,
     getMcpTools,
     MCP_PROTOCOL_VERSION,
 } from '../src/user/agents/AgentMcpManager'
@@ -25,6 +26,59 @@ describe('agent MCP contract', () => {
             'caprover_events',
             'caprover_deployment_status',
         ])
+    })
+
+    test('read logs includes build status and the latest scoped deployment', async () => {
+        const result = await callAgentMcpTool(
+            {
+                key: key('read'),
+                datastore: {
+                    getAgentDeploymentRequests: jest.fn().mockResolvedValue([
+                        {
+                            id: 'deployment-1',
+                            agentKeyId: 'agent_test',
+                            agentKeyName: 'test agent',
+                            role: 'read',
+                            appName: 'api',
+                            isNewApp: false,
+                            captainDefinition: {
+                                schemaVersion: 2,
+                                imageName: 'nginx:latest',
+                            },
+                            status: 'failed',
+                            createdAt: '2026-08-17T10:00:00.000Z',
+                            expiresAt: '2026-08-17T10:30:00.000Z',
+                            updatedAt: '2026-08-17T10:05:00.000Z',
+                            diagnostics: ['build failed'],
+                        },
+                    ]),
+                } as never,
+                serviceManager: {
+                    getAppLogs: jest.fn().mockResolvedValue('runtime line'),
+                    getBuildStatus: jest.fn().mockReturnValue({
+                        isAppBuilding: false,
+                        isBuildFailed: true,
+                        logs: { lines: ['', 'build line'] },
+                    }),
+                } as never,
+            },
+            'caprover_read_logs',
+            { appName: 'api' }
+        )
+
+        expect(result.structuredContent).toMatchObject({
+            appName: 'api',
+            lines: ['runtime line'],
+            build: {
+                isAppBuilding: false,
+                isBuildFailed: true,
+                lines: ['build line'],
+            },
+            latestDeployment: {
+                id: 'deployment-1',
+                diagnostics: ['build failed'],
+            },
+        })
     })
 
     test('only deployment identities receive mutation tools', () => {

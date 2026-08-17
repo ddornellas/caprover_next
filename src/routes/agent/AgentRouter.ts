@@ -28,6 +28,7 @@ import {
     MCP_PROTOCOL_VERSION,
     mcpToolResult,
 } from '../../user/agents/AgentMcpManager'
+import { getAgentBuildLogSnapshot } from '../../user/agents/AgentDiagnostics'
 
 const router = express.Router()
 const agentRateLimiter = new RateLimiter(120, 60_000)
@@ -138,7 +139,12 @@ router.get('/manifest', function (req, res) {
         tools: [
             { name: 'context', method: 'GET', path: '/context' },
             { name: 'list_apps', method: 'GET', path: '/apps' },
-            { name: 'read_logs', method: 'GET', path: '/apps/{appName}/logs' },
+            {
+                name: 'read_logs',
+                method: 'GET',
+                path: '/apps/{appName}/logs',
+                includes: ['runtime', 'build_status'],
+            },
             {
                 name: 'preview_deployment',
                 method: 'POST',
@@ -527,6 +533,10 @@ router.get('/apps/:appName/logs/structured', function (req, res) {
                     appName,
                     generatedAt: new Date().toISOString(),
                     lines,
+                    build: getAgentBuildLogSnapshot(
+                        userManager.serviceManager,
+                        appName
+                    ),
                 }
                 res.send(baseApi)
             })

@@ -65,6 +65,8 @@ export interface AgentDeploymentRequest {
     startedAt?: string
     completedAt?: string
     error?: string
+    /** Sanitized build diagnostics retained after a failed deployment. */
+    diagnostics?: string[]
     previousVersion?: number
     deployedVersion?: number
     verification?: 'passed' | 'failed'

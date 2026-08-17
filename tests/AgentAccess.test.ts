@@ -3,6 +3,7 @@ import {
     authenticateAgentApiKey,
     assertAgentAppScope,
     createAgentDeploymentRequest,
+    getAgentDeploymentRequest,
     createAgentKey,
     revokeAgentKey,
     sanitizeCaptainDefinition,
@@ -208,6 +209,34 @@ describe('agent access', () => {
         )
         expect(started.status).toBe('running')
         expect(started.approvedBy).toBe('human@example.com')
+    })
+
+    test('marks an interrupted running deployment as failed after its ttl', async () => {
+        const store = new MemoryAgentStore()
+        const created = await createAgentKey(store, {
+            name: 'interrupted deploy bot',
+            role: 'deploy',
+            appNames: ['api'],
+        })
+        const key = await authenticateAgentApiKey(store, created.apiKey)
+        const request = await createAgentDeploymentRequest(store, key!, {
+            appName: 'api',
+            captainDefinition: {
+                schemaVersion: 2,
+                imageName: 'nginx:alpine',
+            },
+        })
+        await startAgentDeployment(store, request.id, `agent:${key!.id}`)
+        store.requests[0].expiresAt = new Date(Date.now() - 1_000).toISOString()
+
+        await expect(
+            getAgentDeploymentRequest(store, request.id)
+        ).resolves.toMatchObject({
+            status: 'failed',
+            verification: 'failed',
+            error: expect.stringContaining('interrupted'),
+            diagnostics: [expect.stringContaining('interrupted')],
+        })
     })
 
     test('rejects extra deployment fields and read-only deployments', async () => {

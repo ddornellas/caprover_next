@@ -5,6 +5,7 @@ import type { AppStatus } from '../../models/AppDefinition'
 import Logger from '../../utils/Logger'
 import { recordAuditEvent } from '../AuditLogger'
 import type ServiceManager from '../ServiceManager'
+import { getAgentBuildLogSnapshot } from './AgentDiagnostics'
 import {
     assertAgentAppScope,
     createAgentDeploymentRequest,
@@ -66,7 +67,8 @@ export function getMcpTools(key: AgentKeyRecord) {
         },
         {
             name: 'caprover_read_logs',
-            description: 'Read the last 500 log lines for one scoped app.',
+            description:
+                'Read runtime logs, the latest in-memory build logs, and the latest scoped deployment diagnostics for one app.',
             inputSchema: appNameSchema,
         },
         {
@@ -169,6 +171,26 @@ export async function callAgentMcpTool(
             datastore.getAppsDataStore().getAppDefinitions(),
             datastore.getAgentDeploymentRequests(),
         ])
+        const scopedDeployments = deployments
+            .filter((deployment) => deployment.agentKeyId === key.id)
+            .slice(-20)
+        const refreshedDeployments = await Promise.all(
+            scopedDeployments.map(async (deployment) => {
+                const isExpiredPendingOrRunning =
+                    (deployment.status === 'pending' ||
+                        deployment.status === 'running') &&
+                    Date.parse(deployment.expiresAt) <= Date.now()
+                if (!isExpiredPendingOrRunning) return deployment
+                try {
+                    return await getAgentDeploymentRequest(
+                        datastore,
+                        deployment.id
+                    )
+                } catch (_error) {
+                    return deployment
+                }
+            })
+        )
         return mcpToolResult({
             generatedAt: new Date().toISOString(),
             identity: {
@@ -187,10 +209,9 @@ export async function callAgentMcpTool(
                       }
                     : { appName, status: 'not_created' }
             }),
-            deployments: deployments
-                .filter((deployment) => deployment.agentKeyId === key.id)
-                .slice(-20)
-                .map(getAgentDeploymentStatusForResponse),
+            deployments: refreshedDeployments.map(
+                getAgentDeploymentStatusForResponse
+            ),
             guardrails: {
                 appScope: key.appNames,
                 deleteApps: false,
@@ -202,10 +223,40 @@ export async function callAgentMcpTool(
     if (name === 'caprover_read_logs') {
         const appName = `${args.appName || ''}`
         assertAgentAppScope(key, appName)
-        const logs = await serviceManager.getAppLogs(appName, 'utf8')
+        const [logs, deployments] = await Promise.all([
+            serviceManager.getAppLogs(appName, 'utf8'),
+            datastore.getAgentDeploymentRequests(),
+        ])
+        const latestDeploymentRequest = deployments
+            .filter(
+                (deployment) =>
+                    deployment.agentKeyId === key.id &&
+                    deployment.appName === appName
+            )
+            .sort(
+                (left, right) =>
+                    Date.parse(left.updatedAt || left.createdAt) -
+                    Date.parse(right.updatedAt || right.createdAt)
+            )
+            .slice(-1)[0]
+        let latestDeployment = latestDeploymentRequest
+        if (latestDeploymentRequest) {
+            try {
+                latestDeployment = await getAgentDeploymentRequest(
+                    datastore,
+                    latestDeploymentRequest.id
+                )
+            } catch (_error) {
+                latestDeployment = latestDeploymentRequest
+            }
+        }
         return mcpToolResult({
             appName,
             lines: `${logs || ''}`.split(/\r?\n/).filter(Boolean).slice(-500),
+            build: getAgentBuildLogSnapshot(serviceManager, appName),
+            latestDeployment: latestDeployment
+                ? getAgentDeploymentStatusForResponse(latestDeployment)
+                : undefined,
         })
     }
     if (name === 'caprover_events') {
