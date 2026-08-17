@@ -1,5 +1,5 @@
 <div align="center">
-<img src="frontend/public/full-logo.png" alt="CapRover Next" width="520" />
+<img src="frontend/public/caprover-next-logo-v2.png" alt="CapRover Next" width="520" />
 
 <h1>CapRover Next</h1>
 
