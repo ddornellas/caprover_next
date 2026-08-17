@@ -37,9 +37,12 @@ export interface AppVersion {
     gitHash?: string
 }
 
+export type AppDomainType = 'internal' | 'external' | 'test' | 'custom'
+
 export interface AppCustomDomain {
     publicDomain: string
     hasSsl: boolean
+    domainType?: AppDomainType
 }
 
 export interface AppTag {

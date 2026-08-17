@@ -19,6 +19,7 @@ import {
 import { clientApiRequest, CaptainApiError } from '@/lib/api-client'
 import type {
     AppDefinition,
+    AppDomainType,
     AppEnvVar,
     AppPort,
     AppVolume,
@@ -41,6 +42,23 @@ interface AppDetailsWorkspaceProps {
 }
 
 type Tab = 'overview' | 'configuration' | 'http' | 'deploy' | 'logs'
+
+const APP_DOMAIN_TYPE_OPTIONS: Array<{
+    value: AppDomainType
+    label: string
+}> = [
+    { value: 'external', label: 'External' },
+    { value: 'internal', label: 'Internal' },
+    { value: 'test', label: 'Test' },
+    { value: 'custom', label: 'Custom' },
+]
+
+const APP_DOMAIN_TYPE_LABELS: Record<AppDomainType, string> = {
+    external: 'External',
+    internal: 'Internal',
+    test: 'Test',
+    custom: 'Custom',
+}
 
 function getErrorMessage(error: unknown) {
     if (error instanceof CaptainApiError) return error.message
@@ -826,6 +844,7 @@ function HttpTab({
 }) {
     const [authUser, setAuthUser] = useState(app.httpAuth?.user || '')
     const [authPassword, setAuthPassword] = useState('')
+    const [domainType, setDomainType] = useState<AppDomainType>('external')
 
     return (
         <div className="space-y-6">
@@ -956,12 +975,32 @@ function HttpTab({
                     <CardTitle>Custom domains</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    <div className="flex flex-col gap-2 sm:flex-row">
+                    <p className="text-sm text-muted-foreground">
+                        Add more than one hostname to this app. Each alias is
+                        routed independently by nginx; create its A or CNAME
+                        record before adding it here.
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem_auto]">
                         <Input
                             value={domain}
                             onChange={(event) => setDomain(event.target.value)}
                             placeholder="app.example.com"
                         />
+                        <Select
+                            value={domainType}
+                            aria-label="Domain type"
+                            onChange={(event) =>
+                                setDomainType(
+                                    event.target.value as AppDomainType
+                                )
+                            }
+                        >
+                            {APP_DOMAIN_TYPE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </Select>
                         <Button
                             type="button"
                             disabled={working || !domain.trim()}
@@ -971,6 +1010,7 @@ function HttpTab({
                                     {
                                         appName: app.appName,
                                         customDomain: domain.trim(),
+                                        domainType,
                                     },
                                     'Custom domain added.'
                                 )
@@ -993,9 +1033,22 @@ function HttpTab({
                             >
                                 <div className="flex items-center gap-2">
                                     <Globe2 className="h-4 w-4 text-muted-foreground" />
-                                    <span className="font-medium">
+                                    <a
+                                        href={`https://${item.publicDomain}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="font-medium hover:underline"
+                                    >
                                         {item.publicDomain}
-                                    </span>
+                                        <ExternalLink className="ml-1 inline h-3 w-3" />
+                                    </a>
+                                    <Badge className="capitalize">
+                                        {
+                                            APP_DOMAIN_TYPE_LABELS[
+                                                item.domainType || 'custom'
+                                            ]
+                                        }
+                                    </Badge>
                                     {item.hasSsl && <Badge>SSL</Badge>}
                                 </div>
                                 <div className="flex flex-wrap gap-2">

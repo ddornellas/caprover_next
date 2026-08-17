@@ -50,9 +50,19 @@ export interface IAppVersion {
     gitHash: string | undefined
 }
 
+export const APP_DOMAIN_TYPES = [
+    'internal',
+    'external',
+    'test',
+    'custom',
+] as const
+export type AppDomainType = (typeof APP_DOMAIN_TYPES)[number]
+
 export interface IAppCustomDomain {
     publicDomain: string
     hasSsl: boolean
+    /** Optional for app definitions saved before domain types were introduced. */
+    domainType?: AppDomainType
 }
 
 export interface IAppTag {

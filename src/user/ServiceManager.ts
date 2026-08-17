@@ -16,6 +16,10 @@ import { IHashMapGeneric } from '../models/ICacheGeneric'
 import { IImageSource } from '../models/IImageSource'
 import { PreDeployFunction } from '../models/OtherTypes'
 import CaptainConstants from '../utils/CaptainConstants'
+import {
+    DEFAULT_APP_DOMAIN_TYPE,
+    normalizeAppDomainType,
+} from '../utils/AppDomains'
 import Logger from '../utils/Logger'
 import Utils from '../utils/Utils'
 import Authenticator from './Authenticator'
@@ -285,10 +289,25 @@ class ServiceManager {
             })
     }
 
-    addCustomDomain(appName: string, customDomain: string) {
+    addCustomDomain(
+        appName: string,
+        customDomain: string,
+        domainType: unknown = DEFAULT_APP_DOMAIN_TYPE
+    ) {
         const self = this
+        let normalizedDomainType = DEFAULT_APP_DOMAIN_TYPE
 
         return Promise.resolve()
+            .then(function () {
+                try {
+                    normalizedDomainType = normalizeAppDomainType(domainType)
+                } catch (error) {
+                    throw ApiStatusCodes.createError(
+                        ApiStatusCodes.ILLEGAL_PARAMETER,
+                        error instanceof Error ? error.message : `${error}`
+                    )
+                }
+            })
             .then(function () {
                 const rootDomain = self.dataStore.getRootDomain()
 
@@ -311,7 +330,11 @@ class ServiceManager {
 
                 return self.dataStore
                     .getAppsDataStore()
-                    .addCustomDomainForApp(appName, customDomain)
+                    .addCustomDomainForApp(
+                        appName,
+                        customDomain,
+                        normalizedDomainType
+                    )
             })
             .then(function () {
                 return self.reloadLoadBalancer()

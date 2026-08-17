@@ -243,13 +243,18 @@ router.post('/customdomain/', function (req, res, next) {
 
     const appName = req.body.appName
     const customDomain = (req.body.customDomain || '').toLowerCase().trim()
+    const domainType = req.body.domainType
 
     // verify customdomain.com going through the default NGINX
     // Add customdomain.com to app in Data Store
 
     return Promise.resolve()
         .then(function () {
-            return serviceManager.addCustomDomain(appName, customDomain)
+            return serviceManager.addCustomDomain(
+                appName,
+                customDomain,
+                domainType
+            )
         })
         .then(function () {
             const msg = `Custom domain is enabled for: ${appName} at ${customDomain}`

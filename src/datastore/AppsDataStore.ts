@@ -19,6 +19,10 @@ import ApacheMd5 from '../utils/ApacheMd5'
 import CaptainConstants from '../utils/CaptainConstants'
 import CaptainEncryptor from '../utils/Encryptor'
 import Logger from '../utils/Logger'
+import {
+    DEFAULT_APP_DOMAIN_TYPE,
+    normalizeAppDomainType,
+} from '../utils/AppDomains'
 import Utils from '../utils/Utils'
 import configstore = require('configstore')
 
@@ -92,6 +96,25 @@ class AppsDataStore {
                         ApiStatusCodes.STATUS_ERROR_GENERIC,
                         'App Name should not be empty'
                     )
+                }
+
+                if (app.customDomain) {
+                    for (const domain of app.customDomain) {
+                        if (domain.domainType !== undefined) {
+                            try {
+                                domain.domainType = normalizeAppDomainType(
+                                    domain.domainType
+                                )
+                            } catch (error) {
+                                throw ApiStatusCodes.createError(
+                                    ApiStatusCodes.ILLEGAL_PARAMETER,
+                                    error instanceof Error
+                                        ? error.message
+                                        : `${error}`
+                                )
+                            }
+                        }
+                    }
                 }
 
                 const existingApp = self.data.get(
@@ -522,30 +545,48 @@ class AppsDataStore {
         })
     }
 
-    addCustomDomainForApp(appName: string, customDomain: string) {
+    addCustomDomainForApp(
+        appName: string,
+        customDomain: string,
+        domainType: unknown = DEFAULT_APP_DOMAIN_TYPE
+    ) {
         const self = this
 
-        return this.getAppDefinition(appName).then(function (app) {
-            app.customDomain = app.customDomain || []
-
-            if (app.customDomain.length > 0) {
-                for (let idx = 0; idx < app.customDomain.length; idx++) {
-                    if (app.customDomain[idx].publicDomain === customDomain) {
-                        throw ApiStatusCodes.createError(
-                            ApiStatusCodes.ILLEGAL_PARAMETER,
-                            `App already has customDomain: ${customDomain} attached to app ${appName}`
-                        )
-                    }
-                }
-            }
-
-            app.customDomain.push({
-                publicDomain: customDomain,
-                hasSsl: false,
+        return Promise.resolve()
+            .then(function () {
+                return normalizeAppDomainType(domainType)
             })
+            .then(function (normalizedDomainType) {
+                return self.getAppDefinition(appName).then(function (app) {
+                    app.customDomain = app.customDomain || []
 
-            return self.saveApp(appName, app)
-        })
+                    if (app.customDomain.length > 0) {
+                        for (
+                            let idx = 0;
+                            idx < app.customDomain.length;
+                            idx++
+                        ) {
+                            if (
+                                app.customDomain[idx].publicDomain ===
+                                customDomain
+                            ) {
+                                throw ApiStatusCodes.createError(
+                                    ApiStatusCodes.ILLEGAL_PARAMETER,
+                                    `App already has customDomain: ${customDomain} attached to app ${appName}`
+                                )
+                            }
+                        }
+                    }
+
+                    app.customDomain.push({
+                        publicDomain: customDomain,
+                        hasSsl: false,
+                        domainType: normalizedDomainType,
+                    })
+
+                    return self.saveApp(appName, app)
+                })
+            })
     }
 
     addCustomDomainForAppForMigration(

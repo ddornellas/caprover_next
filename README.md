@@ -188,6 +188,15 @@ renewed transparently by the UI. The token version is persisted under
 login. Changing the administrator password revokes every session; signing out
 revokes the current refresh session.
 
+### Multiple domains per app
+
+An app can serve multiple hostnames from **HTTP & domains**. Add each A/CNAME
+record to the VM first, then attach the hostname to the specific app and mark
+it as `internal`, `external`, `test`, or `custom`. CapRover persists each alias
+and generates an independent nginx route for it; existing aliases without a
+type remain valid and are treated as `custom`. SSL can be enabled per alias
+when the hostname is reachable for Let’s Encrypt validation.
+
 ## Installation
 
 Use a dedicated Ubuntu 22.04/24.04 or Debian 12+ VM with a public stable IPv4
