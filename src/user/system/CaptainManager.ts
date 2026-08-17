@@ -32,6 +32,16 @@ const DEBUG_SALT = 'THIS IS NOT A REAL CERTIFICATE'
 const MAX_FAIL_ALLOWED = 4
 const HEALTH_CHECK_INTERVAL = 20000 // ms
 const TIMEOUT_HEALTH_CHECK = 15000 // ms
+
+export function getCaptainHealthCheckUrl(
+    captainPublicDomain: string,
+    healthCheckEndPoint: string,
+    forceSsl: boolean
+) {
+    const protocol = forceSsl ? 'https' : 'http'
+    return `${protocol}://${captainPublicDomain}${healthCheckEndPoint}`
+}
+
 interface ISuccessCallback {
     (success: boolean): void
 }
@@ -349,7 +359,11 @@ class CaptainManager {
                 return
             }
 
-            const url = `http://${captainPublicDomain}${CaptainConstants.healthCheckEndPoint}`
+            const url = getCaptainHealthCheckUrl(
+                captainPublicDomain,
+                CaptainConstants.healthCheckEndPoint,
+                self.getForceSslValue()
+            )
 
             requestText(
                 url,
