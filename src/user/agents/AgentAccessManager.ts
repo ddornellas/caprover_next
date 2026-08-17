@@ -9,6 +9,7 @@ import {
     AgentKeyMetadata,
     AgentKeyRecord,
     AgentRole,
+    AgentPolicy,
     AGENT_ROLES,
 } from '../../models/AgentAccess'
 import { ICaptainDefinition } from '../../models/ICaptainDefinition'
@@ -57,6 +58,10 @@ export interface CreateAgentKeyInput {
     role: unknown
     appNames: unknown
     expiresAt?: unknown
+    owner?: unknown
+    purpose?: unknown
+    provider?: unknown
+    policy?: unknown
 }
 
 export interface CreateAgentDeploymentInput {
@@ -126,8 +131,91 @@ function nowIso() {
 function isAgentKeyActive(record: AgentKeyRecord) {
     return (
         !record.revokedAt &&
+        !record.pausedAt &&
         (!record.expiresAt || Date.parse(record.expiresAt) > Date.now())
     )
+}
+
+function normalizeOptionalLabel(value: unknown, field: string, max: number) {
+    if (value === undefined || value === null || value === '') return undefined
+    if (typeof value !== 'string') {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            `${field} must be a string`
+        )
+    }
+    const normalized = value.trim()
+    if (!normalized || normalized.length > max || /[\r\n]/.test(normalized)) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            `${field} must be a short single-line string`
+        )
+    }
+    return normalized
+}
+
+function normalizePolicy(value: unknown): AgentPolicy | undefined {
+    if (value === undefined || value === null) return undefined
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'policy must be an object'
+        )
+    }
+    const input = value as Record<string, unknown>
+    const allowed = new Set([
+        'allowAppCreation',
+        'allowDockerfileDeploys',
+        'allowedImagePrefixes',
+    ])
+    const unexpected = Object.keys(input).find((key) => !allowed.has(key))
+    if (unexpected) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            `policy field is not allowed: ${unexpected}`
+        )
+    }
+    for (const field of ['allowAppCreation', 'allowDockerfileDeploys']) {
+        if (input[field] !== undefined && typeof input[field] !== 'boolean') {
+            return error(
+                ApiStatusCodes.ILLEGAL_PARAMETER,
+                `${field} must be a boolean`
+            )
+        }
+    }
+    let allowedImagePrefixes: string[] | undefined
+    if (input.allowedImagePrefixes !== undefined) {
+        if (!Array.isArray(input.allowedImagePrefixes)) {
+            return error(
+                ApiStatusCodes.ILLEGAL_PARAMETER,
+                'allowedImagePrefixes must be an array'
+            )
+        }
+        allowedImagePrefixes = Array.from(
+            new Set(
+                input.allowedImagePrefixes.map((prefix) =>
+                    typeof prefix === 'string' ? prefix.trim() : ''
+                )
+            )
+        ).filter(Boolean)
+        if (
+            allowedImagePrefixes.length > 20 ||
+            allowedImagePrefixes.some(
+                (prefix) => prefix.length > 200 || /[\r\n]/.test(prefix)
+            )
+        ) {
+            return error(
+                ApiStatusCodes.ILLEGAL_PARAMETER,
+                'allowedImagePrefixes contains an invalid prefix'
+            )
+        }
+    }
+    return {
+        allowAppCreation: input.allowAppCreation as boolean | undefined,
+        allowDockerfileDeploys: input.allowDockerfileDeploys as
+            boolean | undefined,
+        allowedImagePrefixes,
+    }
 }
 
 function error(code: number, message: string): never {
@@ -249,6 +337,31 @@ export async function createAgentKey(
     store: AgentAccessStore,
     input: CreateAgentKeyInput
 ) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            'Agent key payload must be an object'
+        )
+    }
+    const allowedInputKeys = new Set([
+        'name',
+        'role',
+        'appNames',
+        'expiresAt',
+        'owner',
+        'purpose',
+        'provider',
+        'policy',
+    ])
+    const unexpectedInputKey = Object.keys(input).find(
+        (key) => !allowedInputKeys.has(key)
+    )
+    if (unexpectedInputKey) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            `Agent key field is not allowed: ${unexpectedInputKey}`
+        )
+    }
     const name = typeof input.name === 'string' ? input.name.trim() : ''
     if (!name || name.length > 80) {
         return error(
@@ -260,6 +373,10 @@ export async function createAgentKey(
     const role = normalizeRole(input.role)
     const appNames = normalizeAppNames(input.appNames)
     const expiresAt = normalizeExpiry(input.expiresAt)
+    const owner = normalizeOptionalLabel(input.owner, 'owner', 120)
+    const purpose = normalizeOptionalLabel(input.purpose, 'purpose', 240)
+    const provider = normalizeOptionalLabel(input.provider, 'provider', 80)
+    const policy = normalizePolicy(input.policy)
     const createdAt = nowIso()
     const id = `agent_${uuid()}`
     const secret = randomBytes(32).toString('base64url')
@@ -272,6 +389,10 @@ export async function createAgentKey(
         tokenHash: hashAgentApiKey(apiKey),
         createdAt,
         expiresAt,
+        owner,
+        purpose,
+        provider,
+        policy,
     }
 
     return withStoreMutation(store, async () => {
@@ -330,6 +451,43 @@ export function assertAgentCanDeploy(record: AgentKeyRecord) {
         return error(
             ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED,
             'This agent key is read-only'
+        )
+    }
+}
+
+function assertAgentPolicy(
+    record: AgentKeyRecord,
+    deployment: ReturnType<typeof normalizeDeploymentInput>
+) {
+    const policy = record.policy
+    // Existing keys without a policy preserve their historical behavior.
+    if (!policy) return
+    if (deployment.createApp && policy.allowAppCreation !== true) {
+        return error(
+            ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED,
+            'This agent key cannot create apps'
+        )
+    }
+    if (
+        deployment.captainDefinition.dockerfileLines &&
+        policy.allowDockerfileDeploys !== true
+    ) {
+        return error(
+            ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED,
+            'This agent key cannot deploy Dockerfile instructions'
+        )
+    }
+    const imageName = deployment.captainDefinition.imageName
+    if (
+        imageName &&
+        policy.allowedImagePrefixes?.length &&
+        !policy.allowedImagePrefixes.some((prefix) =>
+            imageName.startsWith(prefix)
+        )
+    ) {
+        return error(
+            ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED,
+            'The requested image is outside this agent key policy'
         )
     }
 }
@@ -534,6 +692,7 @@ export async function createAgentDeploymentRequest(
     assertAgentCanDeploy(record)
     const normalized = normalizeDeploymentInput(input)
     assertAgentAppScope(record, normalized.appName)
+    assertAgentPolicy(record, normalized)
     const normalizedIdempotencyKey = normalizeIdempotencyKey(idempotencyKey)
     const idempotencyKeyHash = hashIdempotencyKey(normalizedIdempotencyKey)
 
@@ -597,6 +756,65 @@ export async function createAgentDeploymentRequest(
     })
 }
 
+export function previewAgentDeployment(
+    record: AgentKeyRecord,
+    input: CreateAgentDeploymentInput,
+    appExists: boolean
+) {
+    const allowedInputKeys = new Set([
+        'appName',
+        'captainDefinition',
+        'gitHash',
+        'createApp',
+        'description',
+    ])
+    const unexpectedInputKey = Object.keys(input).find(
+        (key) => !allowedInputKeys.has(key)
+    )
+    if (unexpectedInputKey) {
+        return error(
+            ApiStatusCodes.ILLEGAL_PARAMETER,
+            `Deployment field is not allowed: ${unexpectedInputKey}`
+        )
+    }
+    assertAgentCanDeploy(record)
+    const deployment = normalizeDeploymentInput(input)
+    assertAgentAppScope(record, deployment.appName)
+    assertAgentPolicy(record, deployment)
+    if (deployment.createApp === appExists) {
+        return error(
+            deployment.createApp
+                ? ApiStatusCodes.STATUS_ERROR_ALREADY_EXIST
+                : ApiStatusCodes.NOT_FOUND,
+            deployment.createApp
+                ? `App already exists: ${deployment.appName}`
+                : `App does not exist: ${deployment.appName}`
+        )
+    }
+    return {
+        appName: deployment.appName,
+        operation: deployment.createApp ? 'create_and_deploy' : 'deploy',
+        source: deployment.captainDefinition.imageName
+            ? {
+                  type: 'image',
+                  imageName: deployment.captainDefinition.imageName,
+              }
+            : {
+                  type: 'dockerfile',
+                  lineCount:
+                      deployment.captainDefinition.dockerfileLines?.length || 0,
+              },
+        requiresHumanApproval: record.role === 'deploy_approval',
+        risks: [
+            ...(deployment.createApp ? ['creates_app'] : ['replaces_version']),
+            ...(deployment.captainDefinition.dockerfileLines
+                ? ['builds_untrusted_instructions']
+                : []),
+        ],
+        protectedActions: { deleteApps: false, ssh: false, secrets: false },
+    }
+}
+
 export function getAgentDeploymentStatusForResponse(
     request: AgentDeploymentRequest
 ) {
@@ -622,6 +840,10 @@ export function getAgentDeploymentStatusForResponse(
         startedAt: request.startedAt,
         completedAt: request.completedAt,
         error: request.error,
+        previousVersion: request.previousVersion,
+        deployedVersion: request.deployedVersion,
+        verification: request.verification,
+        rolledBackAt: request.rolledBackAt,
     }
 }
 
@@ -745,7 +967,18 @@ export async function runAgentDeployment(
     const request = await getAgentDeploymentRequest(store, requestId)
     if (request.status !== 'running') return request
 
+    let previousVersion: number | undefined
+    let appCreatedByRequest = false
     try {
+        if (!request.isNewApp) {
+            const app = await store
+                .getAppsDataStore()
+                .getAppDefinition(request.appName)
+            previousVersion = app.deployedVersion || 0
+            await updateDeploymentRequest(store, requestId, (current) => {
+                current.previousVersion = previousVersion
+            })
+        }
         if (request.isNewApp) {
             const apps = await store.getAppsDataStore().getAppDefinitions()
             if (Object.prototype.hasOwnProperty.call(apps, request.appName)) {
@@ -765,6 +998,15 @@ export async function runAgentDeployment(
                 store,
                 serviceManager
             )
+            appCreatedByRequest = true
+            await store
+                .getAppsDataStore()
+                .markAppCreatedByAgent(
+                    request.appName,
+                    request.agentKeyId,
+                    request.agentKeyName,
+                    request.description
+                )
         }
 
         await uploadCaptainDefinitionContent(
@@ -779,12 +1021,17 @@ export async function runAgentDeployment(
             serviceManager
         )
 
+        const deployedApp = await store
+            .getAppsDataStore()
+            .getAppDefinition(request.appName)
         const completed = await updateDeploymentRequest(
             store,
             requestId,
             (current) => {
                 current.status = 'succeeded'
                 current.completedAt = nowIso()
+                current.verification = 'passed'
+                current.deployedVersion = deployedApp.deployedVersion || 0
             }
         )
         void recordAuditEvent(store, {
@@ -804,6 +1051,50 @@ export async function runAgentDeployment(
             `${deploymentError || 'Deployment failed'}`
         ).slice(0, 2000)
 
+        let rolledBackAt: string | undefined
+        try {
+            if (request.isNewApp && appCreatedByRequest) {
+                await store
+                    .getAppsDataStore()
+                    .pauseFailedAgentApp(request.appName)
+                await serviceManager.ensureServiceInitedAndUpdated(
+                    request.appName
+                )
+                rolledBackAt = nowIso()
+            } else if (previousVersion && previousVersion > 0) {
+                const current = await store
+                    .getAppsDataStore()
+                    .getAppDefinition(request.appName)
+                const attemptedVersion = (current.versions || []).find(
+                    (version) => version.version === current.deployedVersion
+                )
+                const ownsAttemptedVersion =
+                    current.deployedVersion === previousVersion + 1 &&
+                    ((request.gitHash &&
+                        attemptedVersion?.gitHash === request.gitHash) ||
+                        (request.captainDefinition.imageName &&
+                            attemptedVersion?.deployedImageName ===
+                                request.captainDefinition.imageName))
+                if (ownsAttemptedVersion) {
+                    await store
+                        .getAppsDataStore()
+                        .rollbackAgentDeployment(
+                            request.appName,
+                            previousVersion
+                        )
+                    await serviceManager.ensureServiceInitedAndUpdated(
+                        request.appName
+                    )
+                    rolledBackAt = nowIso()
+                }
+            }
+        } catch (rollbackError) {
+            Logger.e(
+                rollbackError as Error,
+                `Agent deployment rollback failed: ${requestId}`
+            )
+        }
+
         const failed = await updateDeploymentRequest(
             store,
             requestId,
@@ -811,6 +1102,8 @@ export async function runAgentDeployment(
                 current.status = 'failed'
                 current.completedAt = nowIso()
                 current.error = message
+                current.verification = 'failed'
+                current.rolledBackAt = rolledBackAt
             }
         )
         void recordAuditEvent(store, {
@@ -836,4 +1129,57 @@ export async function revokeAgentKey(store: AgentAccessStore, keyId: string) {
         await store.setAgentKeys(keys)
         return record
     })
+}
+
+async function updateAgentKey(
+    store: AgentAccessStore,
+    keyId: string,
+    updater: (record: AgentKeyRecord) => void
+) {
+    return withStoreMutation(store, async () => {
+        const keys = await store.getAgentKeys()
+        const record = keys.find((key) => key.id === keyId)
+        if (!record)
+            return error(ApiStatusCodes.NOT_FOUND, 'Agent key not found')
+        if (record.revokedAt) {
+            return error(
+                ApiStatusCodes.ILLEGAL_OPERATION,
+                'Agent key is revoked'
+            )
+        }
+        updater(record)
+        await store.setAgentKeys(keys)
+        return record
+    })
+}
+
+export function pauseAgentKey(store: AgentAccessStore, keyId: string) {
+    return updateAgentKey(store, keyId, (record) => {
+        record.pausedAt = nowIso()
+    })
+}
+
+export function resumeAgentKey(store: AgentAccessStore, keyId: string) {
+    return updateAgentKey(store, keyId, (record) => {
+        record.pausedAt = undefined
+    })
+}
+
+export async function rotateAgentKey(store: AgentAccessStore, keyId: string) {
+    let apiKey = ''
+    const record = await updateAgentKey(store, keyId, (current) => {
+        apiKey = `${AGENT_KEY_PREFIX}${current.id}_${randomBytes(32).toString('base64url')}`
+        current.tokenHash = hashAgentApiKey(apiKey)
+        current.rotatedAt = nowIso()
+    })
+    return { apiKey, metadata: toAgentKeyMetadata(record) }
+}
+
+export function getAgentLifecycleStatus(record: AgentKeyRecord) {
+    if (record.revokedAt) return 'revoked'
+    if (record.pausedAt) return 'paused'
+    if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) {
+        return 'expired'
+    }
+    return 'active'
 }

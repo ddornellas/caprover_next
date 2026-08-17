@@ -3,7 +3,7 @@
 This roadmap keeps the Next.js migration and automation work narrow, explicit,
 and compatible with the existing API v2 contracts.
 
-## Near term
+## Delivered
 
 ### Restore One-Click Apps in the Next frontend
 
@@ -39,6 +39,13 @@ password or SSH access to the host.
   resource that CapRover does not own or that is outside its scope.
 - Surface agent-created apps in **Apps** with `published`, `on_approval`, and
   `paused` states; only a `deploy` key may bypass the approval state.
+
+The agent channel now also includes first-class onboarding, identity metadata,
+least-privilege deploy policies, pause/resume/rotation, semantic context,
+impact preview, scoped events and structured logs, visible app authorship,
+verification and ownership-proven rollback, plus a stateless MCP endpoint.
+
+## Near term
 
 ### App logs with Dozzle
 

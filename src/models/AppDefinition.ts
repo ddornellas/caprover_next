@@ -116,9 +116,11 @@ export interface IAppDef extends IAppDefinitionBase {
     status?: AppStatus
     isAgentPending?: boolean
     agentDeploymentRequestId?: string
+    createdByAgent?: { id: string; name: string; at: string }
 }
 
 export interface IAppDefSaved extends IAppDefinitionBase {
+    createdByAgent?: { id: string; name: string; at: string }
     appPushWebhook:
         | {
               tokenVersion: string

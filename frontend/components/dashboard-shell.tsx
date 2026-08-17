@@ -2,6 +2,7 @@
 
 import {
     Activity,
+    Bot,
     Boxes,
     CircleGauge,
     ExternalLink,
@@ -16,7 +17,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -30,6 +31,7 @@ const navigation = [
     { href: '/', label: 'Overview', icon: LayoutDashboard },
     { href: '/apps', label: 'Apps', icon: Boxes },
     { href: '/apps/oneclick', label: 'One-Click Apps', icon: Rocket },
+    { href: '/agents', label: 'Agents', icon: Bot },
     { href: '/monitoring', label: 'Monitoring', icon: Activity },
     { href: '/cluster', label: 'Cluster', icon: CircleGauge },
     { href: '/maintenance', label: 'Maintenance', icon: SlidersHorizontal },
@@ -61,6 +63,15 @@ export function DashboardShell({ info, children }: DashboardShellProps) {
     const router = useRouter()
     const locale = useLocale()
     const [mobileOpen, setMobileOpen] = useState(false)
+
+    useEffect(() => {
+        // A co-located server render can validate a refresh session but cannot
+        // forward its Set-Cookie header to the browser. This same-origin probe
+        // transfers the renewed access cookie without interrupting navigation.
+        void fetch('/api/caprover/user/system/info/', {
+            credentials: 'include',
+        })
+    }, [])
 
     return (
         <div className="min-h-screen bg-background text-foreground">

@@ -6,7 +6,7 @@ socket.
 
 ## Create a key
 
-An administrator can create a key in **Settings → Agent access**. Every key
+An administrator can create a key in **Agents**. Every key
 must have:
 
 - a name;
@@ -14,6 +14,12 @@ must have:
 - an explicit list of app names. Names may refer to apps that do not exist yet;
   this is how an agent is allowed to request creation of a specific new app;
 - an optional expiration date of at most one year.
+
+The administrator can also record a human owner, provider, and purpose, then
+apply a deploy policy that independently controls new-app creation,
+Dockerfile-based deploys, and accepted image-name prefixes. Existing keys can
+be paused, resumed, rotated, or permanently revoked without restarting
+CapRover.
 
 The plaintext key is shown only once. CapRover stores only its SHA-256 hash.
 Revoke an exposed key immediately from the same screen.
@@ -32,6 +38,26 @@ curl --fail --silent --show-error \
 
 The response reports the key role and its app scope. A key cannot see or
 mutate apps outside that exact scope.
+
+Start an integration by reading `/api/v2/agent/manifest` and
+`/api/v2/agent/context`. The manifest describes the stable agent operations;
+context provides safe app state, recent deployment state, and guardrails
+without environment values, host data, or raw Docker objects.
+`/api/v2/agent/events` returns a scoped timeline with client IPs removed.
+
+## MCP endpoint
+
+Use `https://captain.example.com/api/v2/agent/mcp` as a Streamable HTTP MCP
+server and configure the same `Authorization: Bearer ...` header. CapRover Next
+supports the stable `2025-11-25` lifecycle in stateless mode: `initialize`,
+`ping`, `tools/list`, `tools/call`, and `notifications/initialized`. It does not
+open a server-sent event stream because all exposed operations are
+request/response tools.
+
+The MCP tool list is derived from the key role. Read identities receive
+context, app, log, event, and deployment-status tools. Deploy identities also
+receive preview and deploy tools. Calls reuse the exact same app scope, policy,
+idempotency, approval, audit, verification, and rollback path as the REST API.
 
 ## Read apps and logs
 
@@ -91,7 +117,7 @@ approver and in **Apps** while the request is pending:
 pending request and return its deployment ID. For a new app, that request is
 immediately visible in **Apps** with status `On approval`; it does not create a
 Docker service until a human approves it. A human administrator must approve
-it in **Settings → Agent access** before the deploy starts. `deploy` keys start
+it in **Agents** before the deploy starts. `deploy` keys start
 new-app deploys directly. Poll the returned ID at
 `/api/v2/agent/deployments/:id`.
 

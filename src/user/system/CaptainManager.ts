@@ -216,6 +216,18 @@ class CaptainManager {
             .then(function () {
                 return dataStore.setEncryptionSalt(self.getCaptainSalt())
             })
+            .then(async function () {
+                const authenticator = Authenticator.getAuthenticator(
+                    dataStore.getNameSpace()
+                )
+                let tokenVersion = await dataStore.getAuthTokenVersion()
+                if (!tokenVersion) {
+                    tokenVersion = authenticator.rotateTokenVersion()
+                    await dataStore.setAuthTokenVersion(tokenVersion)
+                } else {
+                    authenticator.setTokenVersion(tokenVersion)
+                }
+            })
             .then(function () {
                 return loadBalancerManager.init(myNodeId, dataStore)
             })

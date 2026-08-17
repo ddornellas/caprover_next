@@ -6,6 +6,12 @@ import InjectionExtractor from '../../injection/InjectionExtractor'
 import Authenticator from '../../user/Authenticator'
 import { auditFromRequest } from '../../user/AuditLogger'
 import {
+    consumeRefreshSession,
+    createRefreshSession,
+    REFRESH_SESSION_LIFETIME_MS,
+    revokeRefreshSession,
+} from '../../user/AuthSessionManager'
+import {
     CapRoverEventFactory,
     CapRoverEventType,
 } from '../../user/events/ICapRoverEvent'
@@ -15,12 +21,48 @@ import {
     getTrustedProtocol,
     RateLimiter,
 } from '../../utils/RateLimiter'
+import { isSameOriginRequest } from '../../injection/Injector'
 
 const router = express.Router()
 
 // Keep this per source instead of one global queue. A failed attempt from one
 // client must not lock every administrator out of the control plane.
 const loginRateLimiter = new RateLimiter(10, 60_000)
+const ACCESS_COOKIE_LIFETIME_MS = 30 * 60 * 1000
+
+function cookieOptions(req: express.Request, maxAge: number) {
+    return {
+        httpOnly: true,
+        sameSite: 'lax' as const,
+        secure: getTrustedProtocol(req) === 'https',
+        path: '/',
+        maxAge,
+    }
+}
+
+function setSessionCookies(
+    req: express.Request,
+    res: express.Response,
+    accessToken: string,
+    refreshToken: string
+) {
+    res.cookie(
+        CaptainConstants.headerCookieAuth,
+        accessToken,
+        cookieOptions(req, ACCESS_COOKIE_LIFETIME_MS)
+    )
+    res.cookie(
+        CaptainConstants.headerCookieRefresh,
+        refreshToken,
+        cookieOptions(req, REFRESH_SESSION_LIFETIME_MS)
+    )
+}
+
+function clearSessionCookies(req: express.Request, res: express.Response) {
+    const options = cookieOptions(req, 0)
+    res.clearCookie(CaptainConstants.headerCookieAuth, options)
+    res.clearCookie(CaptainConstants.headerCookieRefresh, options)
+}
 
 router.post('/', function (req, res, next) {
     const password = `${req.body.password || ''}`
@@ -105,7 +147,7 @@ router.post('/', function (req, res, next) {
                 loadedHashedPassword
             )
         })
-        .then(function (cookieAuth) {
+        .then(async function (cookieAuth) {
             loginRateLimiter.reset(getRequestClientKey(req))
             void auditFromRequest(
                 dataStoreForLogin,
@@ -114,13 +156,11 @@ router.post('/', function (req, res, next) {
                 'success',
                 'root-session'
             )
-            res.cookie(CaptainConstants.headerCookieAuth, cookieAuth, {
-                httpOnly: true,
-                sameSite: 'lax',
-                secure: getTrustedProtocol(req) === 'https',
-                path: '/',
-                maxAge: 12 * 60 * 60 * 1000,
+            const refresh = await createRefreshSession(dataStoreForLogin, {
+                userAgent: req.get('user-agent'),
+                ip: getRequestClientKey(req),
             })
+            setSessionCookies(req, res, cookieAuth, refresh.token)
             const baseApi = new BaseApi(
                 ApiStatusCodes.STATUS_OK,
                 'Login succeeded'
@@ -147,14 +187,66 @@ router.post('/', function (req, res, next) {
         })
 })
 
+router.post('/refresh/', function (req, res) {
+    if (!isSameOriginRequest(req)) {
+        res.status(403).send(
+            new BaseApi(
+                ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED,
+                'Cross-origin session refresh rejected.'
+            )
+        )
+        return
+    }
+
+    const namespace =
+        InjectionExtractor.extractGlobalsFromInjected(res).namespace
+    const dataStore = DataStoreProvider.getDataStore(namespace)
+    const token = req.cookies?.[CaptainConstants.headerCookieRefresh] || ''
+
+    consumeRefreshSession(dataStore, token, true)
+        .then((session) => {
+            if (!session) {
+                res.status(401).send(
+                    new BaseApi(
+                        ApiStatusCodes.STATUS_AUTH_TOKEN_INVALID,
+                        'Session expired. Sign in again.'
+                    )
+                )
+                return
+            }
+
+            const accessToken =
+                Authenticator.getAuthenticator(
+                    namespace
+                ).getFreshAuthTokenForCookies()
+            setSessionCookies(req, res, accessToken, session.token)
+            res.send(new BaseApi(ApiStatusCodes.STATUS_OK, 'Session refreshed'))
+        })
+        .catch(ApiStatusCodes.createCatcher(res))
+})
+
 router.post('/logout/', function (req, res) {
-    res.clearCookie(CaptainConstants.headerCookieAuth, {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: getTrustedProtocol(req) === 'https',
-        path: '/',
-    })
-    res.send(new BaseApi(ApiStatusCodes.STATUS_OK, 'Logout succeeded'))
+    if (!isSameOriginRequest(req)) {
+        res.status(403).send(
+            new BaseApi(
+                ApiStatusCodes.STATUS_ERROR_NOT_AUTHORIZED,
+                'Cross-origin logout rejected.'
+            )
+        )
+        return
+    }
+    const namespace =
+        InjectionExtractor.extractGlobalsFromInjected(res).namespace
+    const dataStore = DataStoreProvider.getDataStore(namespace)
+    const refreshToken =
+        req.cookies?.[CaptainConstants.headerCookieRefresh] || ''
+
+    revokeRefreshSession(dataStore, refreshToken)
+        .catch(() => undefined)
+        .finally(() => {
+            clearSessionCookies(req, res)
+            res.send(new BaseApi(ApiStatusCodes.STATUS_OK, 'Logout succeeded'))
+        })
 })
 
 export default router

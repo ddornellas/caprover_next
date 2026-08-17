@@ -4,6 +4,7 @@ import BaseApi from '../../api/BaseApi'
 import InjectionExtractor from '../../injection/InjectionExtractor'
 import * as Injector from '../../injection/Injector'
 import Authenticator from '../../user/Authenticator'
+import { revokeAllRefreshSessions } from '../../user/AuthSessionManager'
 import { auditFromRequest } from '../../user/AuditLogger'
 import EnvVars from '../../utils/EnvVars'
 import Utils from '../../utils/Utils'
@@ -123,6 +124,12 @@ router.post('/changepassword/', function (req, res, next) {
         })
         .then(function (hashedPassword) {
             return dataStore.setHashedPassword(hashedPassword)
+        })
+        .then(async function () {
+            const tokenVersion =
+                Authenticator.getAuthenticator(namespace).rotateTokenVersion()
+            await dataStore.setAuthTokenVersion(tokenVersion)
+            await revokeAllRefreshSessions(dataStore)
         })
         .then(function () {
             void auditFromRequest(

@@ -66,6 +66,16 @@ class Authenticator {
             : generateSecureRandomString(64)
     }
 
+    setTokenVersion(tokenVersion: string) {
+        if (!tokenVersion) throw new Error('Auth token version is empty')
+        this.tokenVersion = tokenVersion
+    }
+
+    rotateTokenVersion() {
+        this.tokenVersion = generateSecureRandomString(64)
+        return this.tokenVersion
+    }
+
     changepass(oldPass: string, newPass: string, savedHashedPassword: string) {
         const self = this
 
@@ -95,8 +105,6 @@ class Authenticator {
                         'Old password is incorrect.'
                     )
                 }
-
-                self.tokenVersion = generateSecureRandomString(64)
 
                 const hashed =
                     PASSWORD_HASH_V2_PREFIX +
@@ -150,6 +158,10 @@ class Authenticator {
         )
     }
 
+    getFreshAuthTokenForCookies() {
+        return this.signAuthToken(COOKIE_AUTH_SUFFIX, '30m')
+    }
+
     getAuthToken(
         otpConfig: OtpConfig,
         password: string,
@@ -184,23 +196,24 @@ class Authenticator {
                     )
                 }
 
-                const userObj: UserJwt = {
-                    namespace: self.namespace,
-                    tokenVersion: self.tokenVersion,
-                }
-
-                return jwt.sign(
-                    {
-                        data: userObj,
-                    },
-                    self.encryptionKey + (keySuffix ? keySuffix : ''),
-                    {
-                        algorithm: 'HS256',
-                        expiresIn:
-                            keySuffix === COOKIE_AUTH_SUFFIX ? '12h' : '480h',
-                    }
+                return self.signAuthToken(
+                    keySuffix,
+                    keySuffix === COOKIE_AUTH_SUFFIX ? '30m' : '480h'
                 )
             })
+    }
+
+    private signAuthToken(keySuffix?: string, expiresIn: string = '480h') {
+        const userObj: UserJwt = {
+            namespace: this.namespace,
+            tokenVersion: this.tokenVersion,
+        }
+
+        return jwt.sign(
+            { data: userObj },
+            this.encryptionKey + (keySuffix || ''),
+            { algorithm: 'HS256', expiresIn: expiresIn as any }
+        )
     }
 
     decodeAuthTokenFromCookies(token: string) {

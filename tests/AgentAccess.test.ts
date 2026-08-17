@@ -7,6 +7,10 @@ import {
     revokeAgentKey,
     sanitizeCaptainDefinition,
     startAgentDeployment,
+    pauseAgentKey,
+    resumeAgentKey,
+    rotateAgentKey,
+    previewAgentDeployment,
 } from '../src/user/agents/AgentAccessManager'
 import {
     AgentDeploymentRequest,
@@ -74,6 +78,74 @@ describe('agent access', () => {
         await expect(
             authenticateAgentApiKey(store, created.apiKey)
         ).resolves.toBeUndefined()
+    })
+
+    test('pause, resume and rotation take effect immediately', async () => {
+        const store = new MemoryAgentStore()
+        const created = await createAgentKey(store, {
+            name: 'managed bot',
+            role: 'read',
+            appNames: ['api'],
+        })
+        await pauseAgentKey(store, created.metadata.id)
+        await expect(
+            authenticateAgentApiKey(store, created.apiKey)
+        ).resolves.toBeUndefined()
+        await resumeAgentKey(store, created.metadata.id)
+        await expect(
+            authenticateAgentApiKey(store, created.apiKey)
+        ).resolves.toBeDefined()
+        const rotated = await rotateAgentKey(store, created.metadata.id)
+        await expect(
+            authenticateAgentApiKey(store, created.apiKey)
+        ).resolves.toBeUndefined()
+        await expect(
+            authenticateAgentApiKey(store, rotated.apiKey)
+        ).resolves.toBeDefined()
+    })
+
+    test('previews impact and enforces deploy policy', async () => {
+        const store = new MemoryAgentStore()
+        const created = await createAgentKey(store, {
+            name: 'policy bot',
+            role: 'deploy_approval',
+            appNames: ['api'],
+            policy: {
+                allowAppCreation: false,
+                allowDockerfileDeploys: false,
+                allowedImagePrefixes: ['ghcr.io/acme/'],
+            },
+        })
+        const key = await authenticateAgentApiKey(store, created.apiKey)
+        expect(
+            previewAgentDeployment(
+                key!,
+                {
+                    appName: 'api',
+                    captainDefinition: {
+                        schemaVersion: 2,
+                        imageName: 'ghcr.io/acme/api:1',
+                    },
+                },
+                true
+            )
+        ).toMatchObject({
+            operation: 'deploy',
+            requiresHumanApproval: true,
+        })
+        expect(() =>
+            previewAgentDeployment(
+                key!,
+                {
+                    appName: 'api',
+                    captainDefinition: {
+                        schemaVersion: 2,
+                        imageName: 'docker.io/other/api:1',
+                    },
+                },
+                true
+            )
+        ).toThrow('outside this agent key policy')
     })
 
     test('rejects access outside the explicit app allowlist', async () => {

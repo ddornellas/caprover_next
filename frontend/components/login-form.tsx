@@ -1,7 +1,7 @@
 'use client'
 
 import { ArrowRight, LoaderCircle, LockKeyhole } from 'lucide-react'
-import { FormEvent, useState, useTransition } from 'react'
+import { FormEvent, useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -26,6 +26,26 @@ export function LoginForm() {
     const [otpToken, setOtpToken] = useState('')
     const [needsOtp, setNeedsOtp] = useState(false)
     const [error, setError] = useState('')
+    const [restoring, setRestoring] = useState(true)
+
+    useEffect(() => {
+        let active = true
+        void fetch('/api/caprover/login/refresh/', {
+            method: 'POST',
+            credentials: 'include',
+        })
+            .then((response) => {
+                if (!active || !response.ok) return
+                router.replace('/')
+                router.refresh()
+            })
+            .finally(() => {
+                if (active) setRestoring(false)
+            })
+        return () => {
+            active = false
+        }
+    }, [router])
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault()
@@ -126,14 +146,18 @@ export function LoginForm() {
             <Button
                 className="w-full bg-sky-600 text-white shadow-sm hover:bg-sky-700 focus-visible:ring-sky-500"
                 type="submit"
-                disabled={isPending}
+                disabled={isPending || restoring}
             >
-                {isPending ? (
+                {isPending || restoring ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
                     <ArrowRight className="h-4 w-4" />
                 )}
-                {isPending ? 'Signing in…' : 'Sign in'}
+                {restoring
+                    ? 'Restoring session…'
+                    : isPending
+                      ? 'Signing in…'
+                      : 'Sign in'}
             </Button>
         </form>
     )

@@ -3,6 +3,12 @@ import { ICaptainDefinition } from './ICaptainDefinition'
 export const AGENT_ROLES = ['read', 'deploy_approval', 'deploy'] as const
 export type AgentRole = (typeof AGENT_ROLES)[number]
 
+export interface AgentPolicy {
+    allowAppCreation?: boolean
+    allowDockerfileDeploys?: boolean
+    allowedImagePrefixes?: string[]
+}
+
 export const AGENT_DEPLOYMENT_STATUSES = [
     'pending',
     'running',
@@ -22,7 +28,13 @@ export interface AgentKeyRecord {
     createdAt: string
     expiresAt?: string
     revokedAt?: string
+    pausedAt?: string
     lastUsedAt?: string
+    rotatedAt?: string
+    owner?: string
+    purpose?: string
+    provider?: string
+    policy?: AgentPolicy
 }
 
 export type AgentKeyMetadata = Omit<AgentKeyRecord, 'tokenHash'>
@@ -53,4 +65,8 @@ export interface AgentDeploymentRequest {
     startedAt?: string
     completedAt?: string
     error?: string
+    previousVersion?: number
+    deployedVersion?: number
+    verification?: 'passed' | 'failed'
+    rolledBackAt?: string
 }

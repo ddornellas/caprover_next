@@ -14,7 +14,6 @@ import { clientApiRequest, CaptainApiError } from '@/lib/api-client'
 import type { SystemInfo } from '@/lib/caprover-api'
 
 import { LocalePreferences } from '@/components/locale-preferences'
-import { AgentAccessWorkspace } from '@/components/agent-access-workspace'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -774,8 +773,6 @@ export function SettingsWorkspace({
                     disabled={working}
                 />
             )}
-
-            <AgentAccessWorkspace />
         </div>
     )
 }

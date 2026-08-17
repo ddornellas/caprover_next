@@ -211,6 +211,8 @@ const data = {
 
     headerCookieAuth: 'captainCookieAuth',
 
+    headerCookieRefresh: 'captainRefreshToken',
+
     headerAuth: 'x-captain-auth',
 
     headerAppToken: 'x-captain-app-token',

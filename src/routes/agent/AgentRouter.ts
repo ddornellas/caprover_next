@@ -10,6 +10,8 @@ import {
     extractAgentApiKey,
     getAgentDeploymentRequest,
     getAgentDeploymentStatusForResponse,
+    getAgentLifecycleStatus,
+    previewAgentDeployment,
     runAgentDeployment,
     startAgentDeployment,
 } from '../../user/agents/AgentAccessManager'
@@ -19,6 +21,13 @@ import { auditFromRequest } from '../../user/AuditLogger'
 import { getRequestClientKey, RateLimiter } from '../../utils/RateLimiter'
 import { AgentKeyRecord } from '../../models/AgentAccess'
 import type { AppStatus } from '../../models/AppDefinition'
+import { isSameOriginRequest } from '../../injection/Injector'
+import {
+    callAgentMcpTool,
+    getMcpTools,
+    MCP_PROTOCOL_VERSION,
+    mcpToolResult,
+} from '../../user/agents/AgentMcpManager'
 
 const router = express.Router()
 const agentRateLimiter = new RateLimiter(120, 60_000)
@@ -89,6 +98,11 @@ router.get('/', function (req, res) {
             role: key.role,
             appNames: key.appNames,
             expiresAt: key.expiresAt,
+            owner: key.owner,
+            purpose: key.purpose,
+            provider: key.provider,
+            policy: key.policy,
+            status: getAgentLifecycleStatus(key),
         },
         capabilities: {
             read: true,
@@ -96,9 +110,273 @@ router.get('/', function (req, res) {
             requiresHumanApproval: key.role === 'deploy_approval',
             delete: false,
             ssh: false,
+            createApps: key.policy?.allowAppCreation !== false,
+            dockerfileDeploys: key.policy?.allowDockerfileDeploys !== false,
+        },
+        onboarding: {
+            authentication: 'Authorization: Bearer <agent-api-key>',
+            context: '/api/v2/agent/context',
+            preview: '/api/v2/agent/deployments/preview',
+            deploy: '/api/v2/agent/deployments',
+            events: '/api/v2/agent/events',
+            manifest: '/api/v2/agent/manifest',
         },
     }
     res.send(baseApi)
+})
+
+router.get('/manifest', function (req, res) {
+    const key = getAgentKey(res)
+    const baseApi = new BaseApi(
+        ApiStatusCodes.STATUS_OK,
+        'Agent integration manifest retrieved'
+    )
+    baseApi.data = {
+        protocolVersion: '2026-08-17',
+        authentication: { type: 'bearer', scoped: true },
+        identity: { id: key.id, name: key.name, role: key.role },
+        tools: [
+            { name: 'context', method: 'GET', path: '/context' },
+            { name: 'list_apps', method: 'GET', path: '/apps' },
+            { name: 'read_logs', method: 'GET', path: '/apps/{appName}/logs' },
+            {
+                name: 'preview_deployment',
+                method: 'POST',
+                path: '/deployments/preview',
+            },
+            {
+                name: 'deploy',
+                method: 'POST',
+                path: '/deployments',
+                requiresHumanApproval: key.role === 'deploy_approval',
+            },
+            {
+                name: 'deployment_status',
+                method: 'GET',
+                path: '/deployments/{id}',
+            },
+            { name: 'events', method: 'GET', path: '/events' },
+        ],
+        deniedCapabilities: ['delete_apps', 'ssh', 'read_secrets'],
+    }
+    res.send(baseApi)
+})
+
+router.get('/mcp', function (req, res) {
+    if (!isSameOriginRequest(req)) {
+        res.status(403).send('Invalid Origin')
+        return
+    }
+    // This stateless server does not emit server-initiated messages.
+    res.status(405).setHeader('Allow', 'POST')
+    res.send('MCP event streams are not enabled')
+})
+
+router.post('/mcp', async function (req, res) {
+    const key = getAgentKey(res)
+    const userManager = res.locals.agentUserManager as ReturnType<
+        typeof getUserManager
+    >
+    const body = req.body as {
+        jsonrpc?: unknown
+        id?: unknown
+        method?: unknown
+        params?: unknown
+    }
+    const id = body?.id ?? null
+    const respond = (result: unknown) =>
+        res.send({ jsonrpc: '2.0', id, result })
+    const respondError = (code: number, message: string, data?: unknown) =>
+        res.send({
+            jsonrpc: '2.0',
+            id,
+            error: { code, message, ...(data === undefined ? {} : { data }) },
+        })
+
+    if (!isSameOriginRequest(req)) {
+        res.status(403).send({
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32000, message: 'Invalid Origin' },
+        })
+        return
+    }
+    if (!body || body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
+        respondError(-32600, 'Invalid Request')
+        return
+    }
+    if (body.method === 'notifications/initialized') {
+        res.status(202).send()
+        return
+    }
+    if (body.method === 'initialize') {
+        res.setHeader('MCP-Protocol-Version', MCP_PROTOCOL_VERSION)
+        respond({
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: {
+                name: 'caprover-next',
+                version: CaptainConstants.configs.version,
+                description:
+                    'Scoped deployment control plane for CapRover Next agents.',
+            },
+            instructions:
+                'Read context and preview a deployment before calling deploy. Never request secrets, SSH, app deletion, or apps outside the assigned scope.',
+        })
+        return
+    }
+    if (body.method === 'ping') {
+        respond({})
+        return
+    }
+    if (body.method === 'tools/list') {
+        respond({ tools: getMcpTools(key) })
+        return
+    }
+    if (body.method !== 'tools/call') {
+        respondError(-32601, 'Method not found')
+        return
+    }
+
+    const params = body.params as
+        { name?: unknown; arguments?: Record<string, unknown> } | undefined
+    if (!params || typeof params.name !== 'string') {
+        respondError(-32602, 'Invalid tools/call parameters')
+        return
+    }
+    if (!getMcpTools(key).some((tool) => tool.name === params.name)) {
+        respondError(-32601, `Unknown or unavailable tool: ${params.name}`)
+        return
+    }
+    const args = params.arguments || {}
+
+    try {
+        respond(
+            await callAgentMcpTool(
+                {
+                    key,
+                    datastore: userManager.datastore,
+                    serviceManager: userManager.serviceManager,
+                },
+                params.name,
+                args
+            )
+        )
+    } catch (toolError) {
+        const message =
+            toolError instanceof Error ? toolError.message : 'Tool call failed'
+        respond(mcpToolResult({ error: message }, true))
+    }
+})
+
+router.get('/context', async function (req, res) {
+    const key = getAgentKey(res)
+    const userManager = res.locals.agentUserManager as ReturnType<
+        typeof getUserManager
+    >
+    try {
+        const [apps, deployments] = await Promise.all([
+            userManager.datastore.getAppsDataStore().getAppDefinitions(),
+            userManager.datastore.getAgentDeploymentRequests(),
+        ])
+        const scopedApps = key.appNames.map((appName) => {
+            const app = apps[appName]
+            return app
+                ? {
+                      appName,
+                      status: getAppStatus(app),
+                      deployedVersion: app.deployedVersion || 0,
+                      isBuilding:
+                          userManager.serviceManager.isAppBuilding(appName),
+                  }
+                : { appName, status: 'not_created' }
+        })
+        const ownDeployments = deployments
+            .filter((deployment) => deployment.agentKeyId === key.id)
+            .slice(-20)
+            .map(getAgentDeploymentStatusForResponse)
+        const baseApi = new BaseApi(
+            ApiStatusCodes.STATUS_OK,
+            'Agent context retrieved'
+        )
+        baseApi.data = {
+            generatedAt: new Date().toISOString(),
+            agent: {
+                id: key.id,
+                name: key.name,
+                role: key.role,
+                purpose: key.purpose,
+            },
+            apps: scopedApps,
+            deployments: ownDeployments,
+            guardrails: {
+                appScope: key.appNames,
+                deleteApps: false,
+                ssh: false,
+                readSecrets: false,
+            },
+        }
+        res.send(baseApi)
+    } catch (error) {
+        ApiStatusCodes.createCatcher(res)(error)
+    }
+})
+
+router.get('/events', async function (req, res) {
+    const key = getAgentKey(res)
+    const userManager = res.locals.agentUserManager as ReturnType<
+        typeof getUserManager
+    >
+    try {
+        const requestedLimit = Number(req.query.limit || 50)
+        const limit = Number.isFinite(requestedLimit)
+            ? Math.min(Math.max(Math.floor(requestedLimit), 1), 100)
+            : 50
+        const events = (await userManager.datastore.getAuditEvents())
+            .filter(
+                (event) =>
+                    event.actor === `agent:${key.id}` ||
+                    (typeof event.metadata?.appName === 'string' &&
+                        key.appNames.includes(event.metadata.appName))
+            )
+            .slice(-limit)
+            .reverse()
+            .map(({ ip: _ip, ...event }) => event)
+        const baseApi = new BaseApi(
+            ApiStatusCodes.STATUS_OK,
+            'Scoped agent events retrieved'
+        )
+        baseApi.data = { events }
+        res.send(baseApi)
+    } catch (error) {
+        ApiStatusCodes.createCatcher(res)(error)
+    }
+})
+
+router.post('/deployments/preview', async function (req, res) {
+    const key = getAgentKey(res)
+    const userManager = res.locals.agentUserManager as ReturnType<
+        typeof getUserManager
+    >
+    try {
+        const apps = await userManager.datastore
+            .getAppsDataStore()
+            .getAppDefinitions()
+        const appName = `${req.body?.appName || ''}`.trim()
+        const preview = previewAgentDeployment(
+            key,
+            req.body,
+            Object.prototype.hasOwnProperty.call(apps, appName)
+        )
+        const baseApi = new BaseApi(
+            ApiStatusCodes.STATUS_OK,
+            'Deployment preview retrieved'
+        )
+        baseApi.data = { preview }
+        res.send(baseApi)
+    } catch (error) {
+        ApiStatusCodes.createCatcher(res)(error)
+    }
 })
 
 router.get('/apps', function (req, res, next) {
@@ -213,6 +491,43 @@ router.get('/apps/:appName/logs', function (req, res, next) {
                     'Scoped app logs retrieved'
                 )
                 baseApi.data = { appName, logs }
+                res.send(baseApi)
+            })
+            .catch(ApiStatusCodes.createCatcher(res))
+    } catch (error) {
+        return ApiStatusCodes.createCatcher(res)(error)
+    }
+})
+
+router.get('/apps/:appName/logs/structured', function (req, res) {
+    const key = getAgentKey(res)
+    const userManager = res.locals.agentUserManager as ReturnType<
+        typeof getUserManager
+    >
+    const appName = req.params.appName
+
+    try {
+        assertAgentAppScope(key, appName)
+        return userManager.serviceManager
+            .getAppLogs(appName, 'utf8')
+            .then(function (logs) {
+                const lines = `${logs || ''}`
+                    .split(/\r?\n/)
+                    .filter(Boolean)
+                    .slice(-500)
+                    .map((message, index) => ({
+                        sequence: index + 1,
+                        message,
+                    }))
+                const baseApi = new BaseApi(
+                    ApiStatusCodes.STATUS_OK,
+                    'Structured scoped app logs retrieved'
+                )
+                baseApi.data = {
+                    appName,
+                    generatedAt: new Date().toISOString(),
+                    lines,
+                }
                 res.send(baseApi)
             })
             .catch(ApiStatusCodes.createCatcher(res))

@@ -25,6 +25,23 @@ export class CaptainApiError extends Error {
     }
 }
 
+let refreshPromise: Promise<boolean> | undefined
+
+function refreshBrowserSession() {
+    if (!refreshPromise) {
+        refreshPromise = fetch('/api/caprover/login/refresh/', {
+            method: 'POST',
+            credentials: 'include',
+        })
+            .then((response) => response.ok)
+            .catch(() => false)
+            .finally(() => {
+                refreshPromise = undefined
+            })
+    }
+    return refreshPromise
+}
+
 async function readResponse<T>(response: Response): Promise<ApiResponse<T>> {
     let payload: ApiResponse<T>
 
@@ -69,11 +86,28 @@ export async function clientApiRequest<T>(
     const normalizedPathname =
         pathname === '/' ? '/' : pathname.replace(/\/+$/, '')
     const bffPath = `${normalizedPathname}${query ? `?${query}` : ''}`
-    const response = await fetch(`/api/caprover${bffPath}`, {
-        ...init,
-        credentials: 'include',
-        headers,
-    })
+    const request = () =>
+        fetch(`/api/caprover${bffPath}`, {
+            ...init,
+            credentials: 'include',
+            headers,
+        })
+    let response = await request()
+
+    if (
+        bffPath !== '/login/refresh' &&
+        response.headers.get('content-type')?.includes('application/json')
+    ) {
+        const probe = response.clone()
+        const payload = (await probe.json().catch(() => undefined)) as
+            ApiResponse<unknown> | undefined
+        if (
+            payload?.status === CAPTAIN_STATUS_AUTH_TOKEN_INVALID ||
+            payload?.status === CAPTAIN_STATUS_NOT_AUTHORIZED
+        ) {
+            if (await refreshBrowserSession()) response = await request()
+        }
+    }
 
     return readResponse<T>(response)
 }

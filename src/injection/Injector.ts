@@ -16,6 +16,7 @@ import InjectionExtractor from './InjectionExtractor'
 import { decodeAuthTokenFromRequest } from './AuthTokenExtractor'
 import { IAppDef } from '../models/AppDefinition'
 import { getTrustedHost, getTrustedProtocol } from '../utils/RateLimiter'
+import { consumeRefreshSession } from '../user/AuthSessionManager'
 
 const dockerApi = DockerApiProvider.get()
 
@@ -60,10 +61,12 @@ export function injectUser() {
         const namespace = res.locals.namespace
         const authHeader = req.header(CaptainConstants.headerAuth)
         const cookieToken = req.cookies?.[CaptainConstants.headerCookieAuth]
+        const refreshToken =
+            req.cookies?.[CaptainConstants.headerCookieRefresh] || ''
 
         if (
             !authHeader &&
-            cookieToken &&
+            (cookieToken || refreshToken) &&
             isMutatingRequest(req) &&
             !isSameOriginRequest(req)
         ) {
@@ -76,13 +79,34 @@ export function injectUser() {
             return
         }
 
-        decodeAuthTokenFromRequest(
-            req,
-            Authenticator.getAuthenticator(namespace)
-        )
+        const authenticator = Authenticator.getAuthenticator(namespace)
+        const datastore = DataStoreProvider.getDataStore(namespace)
+
+        decodeAuthTokenFromRequest(req, authenticator)
+            .catch(async function (accessError) {
+                if (authHeader || !refreshToken) throw accessError
+                const session = await consumeRefreshSession(
+                    datastore,
+                    refreshToken,
+                    false
+                )
+                if (!session) throw accessError
+
+                res.cookie(
+                    CaptainConstants.headerCookieAuth,
+                    authenticator.getFreshAuthTokenForCookies(),
+                    {
+                        httpOnly: true,
+                        sameSite: 'lax',
+                        secure: getTrustedProtocol(req) === 'https',
+                        path: '/',
+                        maxAge: 30 * 60 * 1000,
+                    }
+                )
+                return { namespace, tokenVersion: 'refresh-session' }
+            })
             .then(function (userDecoded) {
                 if (userDecoded) {
-                    const datastore = DataStoreProvider.getDataStore(namespace)
                     const userManager = UserManagerProvider.get(namespace)
 
                     const serviceManager = ServiceManager.get(

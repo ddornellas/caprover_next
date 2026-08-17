@@ -65,9 +65,11 @@ deployment state, audit records, and the final Docker operation.
 | `deploy` | Yes | Yes | No | Yes |
 
 Every key has an explicit application allowlist and an optional expiration of
-up to one year. A key cannot access another application by guessing its name.
-Keys are shown once, stored as hashes, and can be revoked from **Settings →
-Agent access**.
+up to one year. A key can also carry a human owner, purpose, provider, and a
+least-privilege deploy policy (app creation, Dockerfile builds, and allowed
+image prefixes). A key cannot access another application by guessing its name.
+Keys are shown once, stored as hashes, and can be paused, resumed, rotated, or
+revoked from the top-level **Agents** workspace.
 
 ### What an agent can and cannot do
 
@@ -76,8 +78,13 @@ Agents can:
 - read safe application status and scoped logs;
 - deploy an existing application using an image or restricted Dockerfile lines;
 - request creation of a specific new application already present in its scope;
-- poll a deployment ID and receive a clear status; and
-- use idempotency keys so retries do not create duplicate deployments.
+- poll a deployment ID and receive a clear status;
+- use idempotency keys so retries do not create duplicate deployments;
+- discover a machine-readable integration manifest and scoped ecosystem
+  context;
+- connect through a bearer-authenticated MCP Streamable HTTP endpoint;
+- preview deployment impact before submitting it; and
+- read its own deployment timeline and bounded structured logs.
 
 Agents cannot:
 
@@ -90,14 +97,16 @@ Agents cannot:
 New applications submitted by an approval-scoped agent appear in **Apps** as
 `On approval`. They do not create a Docker service until a human approves the
 request. Applications expose three operational states: `Published`, `On
-approval`, and `Paused`.
+approval`, and `Paused`. Agent-created apps retain visible authorship. Failed
+new-app deploys are paused safely; failed replacements restore the previous
+deployable version when one is available.
 
 Read the complete contract and examples in
 [docs/AGENT_ACCESS.md](docs/AGENT_ACCESS.md).
 
 ## Quick agent example
 
-Create a key in **Settings → Agent access**, store the returned value securely,
+Create a key in **Agents**, store the returned value securely,
 and use it as a Bearer token. The raw key is never returned again.
 
 ```bash
@@ -108,6 +117,15 @@ export CAPROVER_URL='https://captain.example.com'
 curl --fail --silent --show-error \
   -H "Authorization: Bearer ${CAPROVER_AGENT_KEY}" \
   "${CAPROVER_URL}/api/v2/agent"
+
+# Load semantic context and the machine-readable tool manifest.
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer ${CAPROVER_AGENT_KEY}" \
+  "${CAPROVER_URL}/api/v2/agent/context"
+
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer ${CAPROVER_AGENT_KEY}" \
+  "${CAPROVER_URL}/api/v2/agent/manifest"
 
 # Read only the applications assigned to this key.
 curl --fail --silent --show-error \
@@ -130,8 +148,15 @@ curl --fail --silent --show-error -X POST \
   }'
 ```
 
+MCP clients can use `${CAPROVER_URL}/api/v2/agent/mcp` with the same Bearer
+key. The stateless endpoint implements the stable
+[`2025-11-25` Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+JSON-RPC lifecycle and exposes only scoped context, apps, logs, events,
+deployment preview, submission, and status tools. Approval-scoped identities
+still require the human decision in **Agents**; MCP never bypasses policy.
+
 For an approval-scoped key, the response contains a deployment ID and status
-`pending`. A human approves or rejects it in **Settings → Agent access**. For
+`pending`. A human approves or rejects it in **Agents**. For
 a full-deploy key, the deployment starts immediately and can be polled at
 `/api/v2/agent/deployments/:requestId`.
 
@@ -152,6 +177,16 @@ Let’s Encrypt:
   authentication.
 - **Operations:** Node.js 24, multi-platform Docker images, VM installation,
   digest pinning, health checks, backup, rollback, and release runbooks.
+
+### Sessions that survive updates
+
+The web UI uses a short-lived access cookie and a rotating, opaque refresh
+token with a 30-day lifetime. Refresh tokens are HttpOnly, stored in the
+control-plane datastore only as SHA-256 hashes, bounded per installation, and
+renewed transparently by the UI. The token version is persisted under
+`/captain/data`, so restarting or updating CapRover Next no longer forces a
+login. Changing the administrator password revokes every session; signing out
+revokes the current refresh session.
 
 ## Installation
 

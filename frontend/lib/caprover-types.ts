@@ -106,6 +106,7 @@ export interface AppDefinition {
     status?: AppStatus
     isAgentPending?: boolean
     agentDeploymentRequestId?: string
+    createdByAgent?: { id: string; name: string; at: string }
 }
 
 export interface AppsPayload {

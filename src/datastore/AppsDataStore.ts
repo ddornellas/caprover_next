@@ -1003,6 +1003,48 @@ class AppsDataStore {
             return self.saveApp(appName, app)
         })
     }
+
+    async markAppCreatedByAgent(
+        appName: string,
+        agentId: string,
+        agentName: string,
+        description?: string
+    ) {
+        const app = await this.getAppDefinition(appName)
+        app.createdByAgent = {
+            id: agentId,
+            name: agentName,
+            at: new Date().toISOString(),
+        }
+        app.description = description || app.description
+        app.tags = [
+            ...(app.tags || []).filter((tag) => tag.tagName !== 'agent'),
+            { tagName: 'agent' },
+        ]
+        await this.saveApp(appName, app)
+    }
+
+    async rollbackAgentDeployment(appName: string, version: number) {
+        const app = await this.getAppDefinition(appName)
+        const previous = (app.versions || []).find(
+            (candidate) =>
+                candidate.version === version && candidate.deployedImageName
+        )
+        if (!previous) {
+            throw ApiStatusCodes.createError(
+                ApiStatusCodes.ILLEGAL_OPERATION,
+                `Cannot roll back ${appName} to unavailable version ${version}`
+            )
+        }
+        app.deployedVersion = version
+        await this.saveApp(appName, app)
+    }
+
+    async pauseFailedAgentApp(appName: string) {
+        const app = await this.getAppDefinition(appName)
+        app.instanceCount = 0
+        await this.saveApp(appName, app)
+    }
 }
 
 export default AppsDataStore

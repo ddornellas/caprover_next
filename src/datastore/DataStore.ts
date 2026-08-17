@@ -15,6 +15,7 @@ import { NetDataInfo } from '../models/NetDataInfo'
 import { AgentDeploymentRequest, AgentKeyRecord } from '../models/AgentAccess'
 import { AuditEventRecord } from '../models/AuditEvent'
 import { OneClickDeploymentJobRecord } from '../models/OneClickDeploymentJob'
+import { RefreshSessionRecord } from '../models/AuthSession'
 import CaptainConstants from '../utils/CaptainConstants'
 import CaptainEncryptor from '../utils/Encryptor'
 import Utils from '../utils/Utils'
@@ -44,6 +45,8 @@ const AGENT_KEYS = 'agentKeys'
 const AGENT_DEPLOYMENT_REQUESTS = 'agentDeploymentRequests'
 const AUDIT_EVENTS = 'auditEvents'
 const ONE_CLICK_DEPLOYMENT_JOBS = 'oneClickDeploymentJobs'
+const AUTH_TOKEN_VERSION = 'authTokenVersion'
+const REFRESH_SESSIONS = 'refreshSessions'
 const MAX_AGENT_DEPLOYMENT_REQUESTS = 500
 const MAX_AGENT_DEPLOYMENT_REQUEST_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -489,6 +492,37 @@ class DataStore {
     setAgentKeys(agentKeys: AgentKeyRecord[]) {
         return Promise.resolve().then(() => {
             this.data.set(AGENT_KEYS, agentKeys)
+        })
+    }
+
+    getAuthTokenVersion(): Promise<string> {
+        return Promise.resolve(`${this.data.get(AUTH_TOKEN_VERSION) || ''}`)
+    }
+
+    setAuthTokenVersion(tokenVersion: string) {
+        return Promise.resolve().then(() => {
+            this.data.set(AUTH_TOKEN_VERSION, tokenVersion)
+        })
+    }
+
+    getRefreshSessions(): Promise<RefreshSessionRecord[]> {
+        const value = this.data.get(REFRESH_SESSIONS)
+        const now = Date.now()
+        const sessions = (
+            Array.isArray(value) ? value : []
+        ) as RefreshSessionRecord[]
+        const active = sessions.filter(
+            (session) => Date.parse(session.expiresAt) > now
+        )
+        if (active.length !== sessions.length) {
+            this.data.set(REFRESH_SESSIONS, active)
+        }
+        return Promise.resolve(active)
+    }
+
+    setRefreshSessions(sessions: RefreshSessionRecord[]) {
+        return Promise.resolve().then(() => {
+            this.data.set(REFRESH_SESSIONS, sessions.slice(-10))
         })
     }
 

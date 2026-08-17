@@ -702,6 +702,16 @@ export function AppsWorkspace({
                                                             Persistent
                                                         </Badge>
                                                     )}
+                                                    {app.createdByAgent && (
+                                                        <Badge className="border-violet-300 bg-violet-50 text-violet-700">
+                                                            Agent:{' '}
+                                                            {
+                                                                app
+                                                                    .createdByAgent
+                                                                    .name
+                                                            }
+                                                        </Badge>
+                                                    )}
                                                 </div>
                                                 <p className="mt-1 truncate text-sm text-muted-foreground">
                                                     {app.description ||

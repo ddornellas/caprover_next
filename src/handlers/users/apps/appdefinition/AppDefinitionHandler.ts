@@ -198,6 +198,11 @@ export async function getAllAppDefinitions(
                     status: 'on_approval',
                     isAgentPending: true,
                     agentDeploymentRequestId: request.id,
+                    createdByAgent: {
+                        id: request.agentKeyId,
+                        name: request.agentKeyName,
+                        at: request.createdAt,
+                    },
                     isAppBuilding: false,
                 })
             })

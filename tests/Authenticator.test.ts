@@ -46,3 +46,21 @@ test('new password hashes preserve characters beyond bcrypt input limits', async
         )
     ).resolves.toBe(false)
 })
+
+test('persisted token versions survive a process restart and still rotate', async () => {
+    const first = new Authenticator('stable-salt-', 'captain')
+    const restarted = new Authenticator('stable-salt-', 'captain')
+    first.setTokenVersion('persisted-version')
+    restarted.setTokenVersion('persisted-version')
+
+    const token = first.getFreshAuthTokenForCookies()
+    await expect(restarted.decodeAuthTokenFromCookies(token)).resolves.toEqual({
+        namespace: 'captain',
+        tokenVersion: 'persisted-version',
+    })
+
+    restarted.rotateTokenVersion()
+    await expect(restarted.decodeAuthTokenFromCookies(token)).rejects.toThrow(
+        'Auth token is no longer valid'
+    )
+})

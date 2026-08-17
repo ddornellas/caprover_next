@@ -8,6 +8,10 @@ import {
     getAgentDeploymentRequest,
     getAgentDeploymentStatusForResponse,
     rejectAgentDeployment,
+    pauseAgentKey,
+    resumeAgentKey,
+    rotateAgentKey,
+    getAgentLifecycleStatus,
     revokeAgentKey,
     runAgentDeployment,
     startAgentDeployment,
@@ -31,7 +35,59 @@ router.get('/keys/', function (req, res, next) {
                 ApiStatusCodes.STATUS_OK,
                 'Agent keys retrieved'
             )
-            baseApi.data = { keys: keys.map(toAgentKeyMetadata) }
+            baseApi.data = {
+                keys: keys.map((key) => ({
+                    ...toAgentKeyMetadata(key),
+                    status: getAgentLifecycleStatus(key),
+                })),
+            }
+            res.send(baseApi)
+        })
+        .catch(ApiStatusCodes.createCatcher(res))
+})
+
+for (const action of ['pause', 'resume'] as const) {
+    router.post(`/keys/:keyId/${action}/`, function (req, res) {
+        const user = getUser(res)
+        const operation = action === 'pause' ? pauseAgentKey : resumeAgentKey
+        operation(user.dataStore, req.params.keyId)
+            .then((record) => {
+                void auditFromRequest(
+                    user.dataStore,
+                    req,
+                    `agent.key.${action}`,
+                    'success',
+                    'root-session',
+                    record.id
+                )
+                const baseApi = new BaseApi(
+                    ApiStatusCodes.STATUS_OK,
+                    `Agent key ${action === 'pause' ? 'paused' : 'resumed'}`
+                )
+                baseApi.data = { key: toAgentKeyMetadata(record) }
+                res.send(baseApi)
+            })
+            .catch(ApiStatusCodes.createCatcher(res))
+    })
+}
+
+router.post('/keys/:keyId/rotate/', function (req, res) {
+    const user = getUser(res)
+    rotateAgentKey(user.dataStore, req.params.keyId)
+        .then((rotated) => {
+            void auditFromRequest(
+                user.dataStore,
+                req,
+                'agent.key.rotate',
+                'success',
+                'root-session',
+                rotated.metadata.id
+            )
+            const baseApi = new BaseApi(
+                ApiStatusCodes.STATUS_OK,
+                'Agent key rotated. Store the new apiKey now.'
+            )
+            baseApi.data = rotated
             res.send(baseApi)
         })
         .catch(ApiStatusCodes.createCatcher(res))
